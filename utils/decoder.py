@@ -9,6 +9,80 @@ import structlog
 logger = structlog.get_logger()
 
 
+def decode_seatsio_response(response_text: str) -> Optional[str]:
+    """
+    Decode seats.io object-statuses response.
+    
+    The response may be:
+    1. Base64-encoded binary data that contains hex-encoded JSON with offset
+    2. Direct hex-encoded JSON with offset
+    3. Plain JSON
+    
+    Args:
+        response_text: Raw response text
+    
+    Returns:
+        Decoded JSON string or None if decoding fails
+    """
+    import base64
+    
+    # #region agent log
+    import json as json_module
+    with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+        f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:12","message":"decode_seatsio_response_entry","data":{"response_length":len(response_text) if response_text else 0,"response_preview":response_text[:100] if response_text else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+    # #endregion
+    
+    if not response_text:
+        return None
+    
+    # Try 1: Direct JSON parse
+    try:
+        json.loads(response_text)
+        return response_text
+    except json.JSONDecodeError:
+        pass
+    
+    # Try 2: Base64 decode first, then apply byte offset directly
+    try:
+        # Check if it looks like base64 (contains +, /, =)
+        if any(c in response_text for c in '+/=') or len(response_text) > 1000:
+            # #region agent log
+            with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:35","message":"trying_base64_decode","data":{},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
+            # Decode base64 to get binary data
+            binary_data = base64.b64decode(response_text)
+            # Apply offset directly to bytes (subtract 41 from each byte)
+            decoded_bytes = bytes((b - 41) % 256 for b in binary_data)
+            # Try to decode as UTF-8
+            decoded = decoded_bytes.decode('utf-8')
+            # Verify it's JSON
+            json.loads(decoded)
+            # #region agent log
+            with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:45","message":"base64_then_offset_decode_success","data":{"decoded_length":len(decoded),"decoded_preview":decoded[:200]},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
+            return decoded
+    except Exception as e:
+        # #region agent log
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:50","message":"base64_then_offset_decode_failed","data":{"error":str(e)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
+        pass
+    
+    # Try 3: Direct hex offset decode (if it's already hex)
+    if all(c in '0123456789abcdefABCDEF' for c in response_text.strip()):
+        try:
+            decoded = decode_hex_offset(response_text.strip(), offset=41)
+            if decoded:
+                json.loads(decoded)  # Verify
+                return decoded
+        except:
+            pass
+    
+    return None
+
+
 def decode_hex_offset(hex_string: str, offset: int = 41) -> str:
     """
     Decode hex-encoded string with byte offset subtraction.
@@ -23,6 +97,11 @@ def decode_hex_offset(hex_string: str, offset: int = 41) -> str:
     Returns:
         Decoded string
     """
+    # #region agent log
+    import json as json_module
+    with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+        f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:75","message":"decode_hex_offset_entry","data":{"hex_string_length":len(hex_string) if hex_string else 0,"hex_string_preview":hex_string[:100] if hex_string else None,"offset":offset},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+    # #endregion
     try:
         # Convert hex string to bytes
         encoded_bytes = bytes.fromhex(hex_string)
@@ -30,8 +109,16 @@ def decode_hex_offset(hex_string: str, offset: int = 41) -> str:
         # Subtract the offset from each byte and convert to character
         decoded_text = "".join(chr(b - offset) for b in encoded_bytes)
         
+        # #region agent log
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:88","message":"decode_hex_offset_success","data":{"decoded_length":len(decoded_text),"decoded_preview":decoded_text[:200]},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         return decoded_text
     except Exception as e:
+        # #region agent log
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"decoder.py:92","message":"decode_hex_offset_failed","data":{"error":str(e),"error_type":type(e).__name__,"hex_string_preview":hex_string[:100] if hex_string else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         logger.error("hex_decode_failed", error=str(e), hex_length=len(hex_string) if hex_string else 0)
         return ""
 

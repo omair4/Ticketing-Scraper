@@ -119,12 +119,32 @@ class BrowserAutomation:
                 content_type = response.headers.get('content-type', '')
                 body = None
                 
-                # Try to get response body for JSON responses
-                if response.ok and ('json' in content_type or 'text' in content_type):
-                    try:
-                        body = await response.text()
-                    except:
-                        pass
+                # Check if this is a critical API endpoint that we must capture
+                is_critical_api = any(critical in url for critical in [
+                    '/api/events/seated/',
+                    'object-statuses',
+                    'seating-plan/availability'
+                ])
+                
+                # Try to get response body
+                if response.ok:
+                    # For critical APIs, try to capture regardless of content-type
+                    # For others, only capture if it's JSON or text
+                    if is_critical_api or ('json' in content_type or 'text' in content_type or 'application/' in content_type):
+                        try:
+                            body = await response.text()
+                        except:
+                            # If text() fails, try body() for binary data
+                            try:
+                                body_bytes = await response.body()
+                                # Try to decode as text, fallback to base64 if needed
+                                try:
+                                    body = body_bytes.decode('utf-8')
+                                except:
+                                    import base64
+                                    body = base64.b64encode(body_bytes).decode('utf-8')
+                            except:
+                                pass
                 
                 captured = CapturedResponse(
                     url=url,
@@ -133,7 +153,13 @@ class BrowserAutomation:
                     body=body
                 )
                 self.captured_responses.append(captured)
-                logger.debug("captured_response", url=url[:100], status=response.status)
+                # #region agent log
+                if 'object-statuses' in url or '/api/events/seated/' in url:
+                    import json as json_module
+                    with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                        f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"browser.py:136","message":"critical_api_captured","data":{"url":url,"status":response.status,"content_type":content_type,"has_body":body is not None,"body_length":len(body) if body else 0,"body_preview":body[:200] if body else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+                # #endregion
+                logger.debug("captured_response", url=url[:100], status=response.status, has_body=body is not None)
             except Exception as e:
                 logger.warning("response_capture_failed", url=url, error=str(e))
     

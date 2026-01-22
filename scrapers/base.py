@@ -58,10 +58,33 @@ class BaseScraper(ABC):
     
     def find_response_by_pattern(self, responses: list[CapturedResponse], 
                                   pattern: str) -> Optional[CapturedResponse]:
-        """Find first response matching a URL pattern"""
+        """Find first response matching a URL pattern, prioritizing API endpoints"""
+        # #region agent log
+        import json as json_module
+        matching_responses = [r for r in responses if pattern in r.url]
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"base.py:59","message":"find_response_by_pattern","data":{"pattern":pattern,"matching_count":len(matching_responses),"matching_urls":[r.url for r in matching_responses[:5]],"has_body_count":sum(1 for r in matching_responses if r.body)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
+        
+        # Priority order: API endpoints first, then responses with bodies, then any match
+        api_keywords = ['/api/', 'object-statuses', 'seating-plan']
+        
+        # First try: API endpoints with body
+        for response in responses:
+            if pattern in response.url and response.body:
+                if any(keyword in response.url for keyword in api_keywords):
+                    return response
+        
+        # Second try: Any response with body
         for response in responses:
             if pattern in response.url and response.body:
                 return response
+        
+        # Third try: Any matching response (even without body, for debugging)
+        for response in responses:
+            if pattern in response.url:
+                return response
+        
         return None
     
     def find_all_responses_by_pattern(self, responses: list[CapturedResponse],

@@ -22,7 +22,7 @@ import structlog
 from scrapers.base import BaseScraper
 from models import ScrapeResult, Seat, EventInfo, SeatStatus, PriceLevel
 from browser import CapturedResponse
-from utils.decoder import decode_hex_offset, parse_json_safe, extract_event_id_from_url
+from utils.decoder import decode_seatsio_response, parse_json_safe, extract_event_id_from_url
 
 logger = structlog.get_logger()
 
@@ -40,6 +40,18 @@ class SeatsIOScraper(BaseScraper):
     async def extract(self, captured_responses: list[CapturedResponse],
                      page_html: str, event_url: str) -> ScrapeResult:
         """Extract seats from seats.io API responses"""
+        
+        # #region agent log
+        import json as json_module
+        target_urls = [
+            'object-statuses',
+            'embed.admitonelive.com/api/events/seated',
+            'seatsio.net'
+        ]
+        matching_urls = [r.url for r in captured_responses if any(pattern in r.url for pattern in target_urls)]
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"seatsio_scraper.py:40","message":"extract_entry","data":{"total_responses":len(captured_responses),"matching_urls":matching_urls,"all_urls":[r.url for r in captured_responses[:10]]},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         
         logger.info("starting_seatsio_extraction", response_count=len(captured_responses))
         
@@ -66,16 +78,34 @@ class SeatsIOScraper(BaseScraper):
         
         The API returns `all_levels` which maps level_id to price info.
         """
+        # #region agent log
+        import json as json_module
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"seatsio_scraper.py:63","message":"_extract_pricing_entry","data":{"response_count":len(responses)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
+        
         price_levels = {}
         
-        # Find the AdmitONE API response
-        admitone_response = self.find_response_by_pattern(responses, 'embed.admitonelive.com')
+        # Find the AdmitONE API response - prioritize the /api/events/seated/ endpoint
+        admitone_response = self.find_response_by_pattern(responses, 'embed.admitonelive.com/api/events/seated')
+        if not admitone_response:
+            # Fallback to any embed.admitonelive.com response
+            admitone_response = self.find_response_by_pattern(responses, 'embed.admitonelive.com')
+        
+        # #region agent log
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"seatsio_scraper.py:72","message":"admitone_response_found","data":{"found":admitone_response is not None,"url":admitone_response.url if admitone_response else None,"has_body":admitone_response.body is not None if admitone_response else False,"body_length":len(admitone_response.body) if admitone_response and admitone_response.body else 0,"body_preview":admitone_response.body[:200] if admitone_response and admitone_response.body else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         
         if not admitone_response or not admitone_response.body:
             logger.warning("no_admitone_response_found")
             return price_levels
         
         try:
+            # #region agent log
+            with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"seatsio_scraper.py:79","message":"before_json_parse","data":{"body_type":type(admitone_response.body).__name__,"body_length":len(admitone_response.body),"body_preview":admitone_response.body[:500]},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
             data = json.loads(admitone_response.body)
             
             # Extract from all_levels
@@ -101,8 +131,18 @@ class SeatsIOScraper(BaseScraper):
                 self._price_by_name[name_lower] = level
             
         except Exception as e:
+            # #region agent log
+            import json as json_module
+            with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"seatsio_scraper.py:104","message":"pricing_extraction_exception","data":{"error":str(e),"error_type":type(e).__name__,"body_preview":admitone_response.body[:500] if admitone_response and admitone_response.body else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
             logger.error("pricing_extraction_failed", error=str(e))
         
+        # #region agent log
+        import json as json_module
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"A","location":"seatsio_scraper.py:106","message":"_extract_pricing_exit","data":{"price_levels_count":len(price_levels)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
         return price_levels
     
     async def _extract_event_info(self, responses: list[CapturedResponse], 
@@ -153,9 +193,19 @@ class SeatsIOScraper(BaseScraper):
         # Find seats.io response
         seatsio_response = self.find_response_by_pattern(responses, 'object-statuses')
         
+        # #region agent log
+        import json as json_module
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"seatsio_scraper.py:154","message":"seatsio_response_search","data":{"found_by_object_statuses":seatsio_response is not None,"url":seatsio_response.url if seatsio_response else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
+        
         if not seatsio_response:
             # Try alternative pattern
             seatsio_response = self.find_response_by_pattern(responses, 'seatsio.net')
+            # #region agent log
+            with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"seatsio_scraper.py:158","message":"seatsio_response_search_alt","data":{"found_by_seatsio_net":seatsio_response is not None,"url":seatsio_response.url if seatsio_response else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
         
         if not seatsio_response or not seatsio_response.body:
             logger.warning("no_seatsio_response_found")
@@ -163,23 +213,39 @@ class SeatsIOScraper(BaseScraper):
         
         # Decode response if needed
         raw_body = seatsio_response.body
+        
+        # #region agent log
+        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+            body_preview = raw_body[:500] if raw_body else None
+            is_hex = all(c in '0123456789abcdefABCDEF' for c in raw_body.strip()) if raw_body else False
+            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"seatsio_scraper.py:215","message":"raw_body_analysis","data":{"body_length":len(raw_body) if raw_body else 0,"body_preview":body_preview,"is_hex":is_hex,"url":seatsio_response.url},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+        # #endregion
+        
+        # Use the new unified decoder that handles base64->hex->offset decoding
+        decoded_json = decode_seatsio_response(raw_body)
         parsed_data = None
         
-        # Try direct JSON parse first
-        try:
-            parsed_data = json.loads(raw_body)
-        except json.JSONDecodeError:
-            # Try hex decoding
-            logger.info("attempting_hex_decode")
-            decoded = decode_hex_offset(raw_body, offset=41)
-            if decoded:
-                try:
-                    parsed_data = json.loads(decoded)
-                    logger.info("hex_decode_successful")
-                except:
-                    pass
+        if decoded_json:
+            try:
+                parsed_data = json.loads(decoded_json)
+                logger.info("seatsio_decode_successful")
+                # #region agent log
+                with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"seatsio_scraper.py:228","message":"seatsio_decode_success","data":{"parsed_type":type(parsed_data).__name__,"data_length":len(decoded_json)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+                # #endregion
+            except Exception as e:
+                # #region agent log
+                with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                    f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"seatsio_scraper.py:233","message":"decoded_json_parse_failed","data":{"error":str(e)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+                # #endregion
+                pass
         
         if not parsed_data:
+            # #region agent log
+            import json as json_module
+            with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
+                f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"B","location":"seatsio_scraper.py:183","message":"parsed_data_is_none","data":{"raw_body_length":len(raw_body) if raw_body else 0},"timestamp":int(__import__('time').time()*1000)}) + '\n')
+            # #endregion
             self.add_error("Could not parse seats.io response")
             return seats
         
