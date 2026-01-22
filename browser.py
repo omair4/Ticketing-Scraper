@@ -156,10 +156,23 @@ class BrowserAutomation:
             # Step 1: Navigate to event page
             await self.page.goto(event_url, wait_until='domcontentloaded', 
                                timeout=self.config.browser_timeout)
-            await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
+            
+            # Wait for page to load - use 'load' instead of 'networkidle' as fallback
+            try:
+                await self.page.wait_for_load_state('load', timeout=10000)
+            except:
+                logger.debug("load_state_timeout", msg="Continuing anyway")
+            
+            # Try networkidle but don't fail if it times out
+            try:
+                await self.page.wait_for_load_state('networkidle', timeout=10000)
+            except:
+                logger.debug("networkidle_timeout", msg="Continuing anyway - page may have ongoing requests")
+            
             await asyncio.sleep(self.config.page_load_delay / 1000)
             
             # Step 2: Click first "Buy Now" or "Get Tickets" button
+            logger.info("attempting_to_click_buy_button")
             clicked = await self._click_buy_button()
             if not clicked:
                 return NavigationResult(
@@ -168,30 +181,68 @@ class BrowserAutomation:
                     error="Could not find Buy Now button"
                 )
             
-            # Wait for response (modal or redirect)
-            await asyncio.sleep(self.config.click_delay / 1000)
-            await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
+            # Wait for modal/iframe to appear or redirect
+            logger.info("waiting_for_modal_or_redirect")
+            await asyncio.sleep(self.config.click_delay / 1000)  # Wait after clicking Buy Now
             
-            # Step 3: Check if we need a second click (Select Seats button)
-            # This is for Scenario 1 where a modal appears
-            select_seats_clicked = await self._try_click_select_seats()
+            # Check if a modal/iframe appeared (Scenario 1: seats.io)
+            modal_iframe = await self._wait_for_modal_iframe(timeout=10000)
             
-            if select_seats_clicked:
-                logger.info("select_seats_clicked", scenario="modal_flow")
-                await asyncio.sleep(self.config.click_delay / 1000)
-                await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
+            if modal_iframe:
+                logger.info("modal_iframe_detected", scenario="seatsio_modal_flow")
+                
+                # Wait for iframe content to fully load and render
+                await asyncio.sleep(4)  # Give iframe time to load embed.admitonelive.com content
+                try:
+                    await modal_iframe.wait_for_load_state('networkidle', timeout=15000)
+                except:
+                    logger.debug("iframe_networkidle_timeout", msg="Continuing anyway")
+                
+                # Try to click Select Seats button inside iframe
+                select_seats_clicked = await self._try_click_select_seats_in_iframe(modal_iframe)
+                
+                if select_seats_clicked:
+                    logger.info("select_seats_clicked_in_iframe")
+                    # Wait for seats.io map to load - this can take time
+                    await asyncio.sleep(6)  # Give seats.io time to load and make API calls
+                    try:
+                        # Wait for seats.io API calls to complete
+                        await self.page.wait_for_load_state('networkidle', timeout=25000)
+                    except:
+                        logger.debug("networkidle_timeout_after_select_seats", msg="Continuing anyway")
+                else:
+                    # Try clicking Select Seats in main page (fallback)
+                    select_seats_clicked = await self._try_click_select_seats()
+                    if select_seats_clicked:
+                        logger.info("select_seats_clicked_main_page")
+                        await asyncio.sleep(6)
+                        try:
+                            await self.page.wait_for_load_state('networkidle', timeout=25000)
+                        except:
+                            logger.debug("networkidle_timeout_after_select_seats_main", msg="Continuing anyway")
             else:
-                # Check if we're on tickets.admitone.com and need another Buy Now
+                # No modal - check if we redirected to tickets.admitone.com (Scenario 2)
                 current_url = self.page.url
                 if 'tickets.admitone.com' in current_url:
                     logger.info("detected_tickets_admitone", url=current_url)
+                    # Wait for page to fully load
+                    await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
+                    await asyncio.sleep(2)
+                    
                     # Try clicking Buy Now again on this page
                     await self._click_buy_button()
-                    await asyncio.sleep(self.config.click_delay / 1000)
+                    await asyncio.sleep(3)
                     await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
+                else:
+                    # Try clicking Select Seats in case it's already visible
+                    select_seats_clicked = await self._try_click_select_seats()
+                    if select_seats_clicked:
+                        logger.info("select_seats_clicked_after_buy")
+                        await asyncio.sleep(5)
+                        await self.page.wait_for_load_state('networkidle', timeout=20000)
             
-            # Give time for API calls to complete
-            await asyncio.sleep(2)
+            # Give additional time for all API calls to complete
+            await asyncio.sleep(3)
             
             # Detect which scenario we're in based on captured responses
             scenario = self._detect_scenario()
@@ -222,26 +273,179 @@ class BrowserAutomation:
         Returns:
             True if a button was clicked
         """
+        # First try role-based selector (most reliable)
+        try:
+            buy_button = self.page.get_by_role('button', name='Buy Now')
+            if await buy_button.is_visible(timeout=5000):
+                await buy_button.click()
+                logger.info("clicked_buy_button", method="get_by_role", text="Buy Now")
+                return True
+        except Exception as e:
+            logger.debug("get_by_role_failed", error=str(e))
+        
+        # Try all configured selectors
         for selector in BUTTON_SELECTORS['buy_now']:
             try:
                 button = self.page.locator(selector).first
-                if await button.is_visible(timeout=2000):
+                if await button.is_visible(timeout=5000):
+                    text = await button.text_content()
                     await button.click()
-                    logger.info("clicked_button", selector=selector)
+                    logger.info("clicked_button", selector=selector, text=text)
                     return True
-            except:
+            except Exception as e:
+                logger.debug("selector_failed", selector=selector, error=str(e))
                 continue
         
-        # Try more generic approaches
+        # Try more generic approaches - look for buttons/links with buy-related text
         try:
-            # Look for any button/link with buy-related text
-            buy_element = self.page.locator('text=/buy|get tickets|purchase/i').first
-            if await buy_element.is_visible(timeout=2000):
-                await buy_element.click()
-                logger.info("clicked_buy_generic")
-                return True
-        except:
-            pass
+            # Try get_by_role with partial text
+            for text_variant in ['Buy Now', 'Get Tickets', 'Purchase']:
+                try:
+                    buy_element = self.page.get_by_role('button', name=text_variant)
+                    if await buy_element.is_visible(timeout=3000):
+                        await buy_element.click()
+                        logger.info("clicked_buy_by_role", text=text_variant)
+                        return True
+                except:
+                    continue
+        except Exception as e:
+            logger.debug("role_based_generic_failed", error=str(e))
+        
+        # Last resort: try to find by partial text match
+        try:
+            all_buttons = self.page.locator('button, a')
+            count = await all_buttons.count()
+            logger.debug("checking_buttons", count=count)
+            for i in range(min(count, 20)):  # Check first 20 buttons
+                button = all_buttons.nth(i)
+                try:
+                    text = await button.text_content()
+                    if text and any(keyword in text.lower() for keyword in ['buy now', 'get tickets', 'purchase', 'buy']):
+                        if await button.is_visible(timeout=2000):
+                            await button.click()
+                            logger.info("clicked_buy_by_text", text=text)
+                            return True
+                except:
+                    continue
+        except Exception as e:
+            logger.debug("text_search_failed", error=str(e))
+        
+        logger.warning("buy_button_not_found")
+        return False
+    
+    async def _wait_for_modal_iframe(self, timeout: int = 10000) -> Optional[Page]:
+        """
+        Wait for modal iframe to appear and return its page object.
+        
+        Returns:
+            Page object of the iframe, or None if not found
+        """
+        try:
+            # Look for iframe with embed.admitonelive.com (most common)
+            # Also check for iframe with title containing "Buy tickets"
+            iframe_selectors = [
+                'iframe[src*="embed.admitonelive.com"]',
+                'iframe[src*="admitonelive"]',
+                'iframe[title*="Buy tickets"]',
+                'iframe[title*="tickets"]'
+            ]
+            
+            iframe_element = None
+            for selector in iframe_selectors:
+                try:
+                    iframe_element = await self.page.wait_for_selector(
+                        selector, 
+                        timeout=timeout // len(iframe_selectors),
+                        state='attached'
+                    )
+                    if iframe_element:
+                        break
+                except:
+                    continue
+            
+            if iframe_element:
+                # Get the iframe's content frame
+                iframe = await iframe_element.content_frame()
+                if iframe:
+                    logger.info("modal_iframe_found", src=await iframe_element.get_attribute('src'))
+                    # Wait for iframe to load DOM and then network
+                    try:
+                        await iframe.wait_for_load_state('domcontentloaded', timeout=10000)
+                        await asyncio.sleep(1)  # Small delay for content to render
+                    except:
+                        logger.debug("iframe_dom_load_timeout", msg="Continuing anyway")
+                    return iframe
+        except Exception as e:
+            logger.debug("no_modal_iframe_found", error=str(e))
+        
+        return None
+    
+    async def _try_click_select_seats_in_iframe(self, iframe: Page) -> bool:
+        """
+        Try to click Select Seats button inside the iframe.
+        
+        Args:
+            iframe: The iframe Page object
+            
+        Returns:
+            True if button was found and clicked
+        """
+        try:
+            # Wait a bit for iframe content to fully render
+            await asyncio.sleep(3)
+            
+            # Try role-based selector first (most reliable)
+            try:
+                button = iframe.get_by_role('button', name='Select Seats')
+                if await button.is_visible(timeout=4000):
+                    await button.click()
+                    logger.info("clicked_select_seats_in_iframe", method="get_by_role")
+                    return True
+            except:
+                pass
+            
+            # Try various CSS selectors for Select Seats button
+            selectors = [
+                'button:has-text("Select Seats")',  # Most common based on testing
+                'button[aria-label="Select Seats"]',
+                'button:has-text("Choose Seats")',
+                'a:has-text("Select Seats")',
+                'a:has-text("Choose Seats")',
+                '[class*="select"]:has-text("Select")',
+                '[class*="seat"]:has-text("Seat")',
+                'button[data-testid*="select"]',
+                'button[aria-label*="Select"]',
+            ]
+            
+            for selector in selectors:
+                try:
+                    button = iframe.locator(selector).first
+                    if await button.is_visible(timeout=4000):
+                        await button.click()
+                        logger.info("clicked_select_seats_in_iframe", selector=selector)
+                        return True
+                except Exception as e:
+                    logger.debug("selector_failed", selector=selector, error=str(e))
+                    continue
+            
+            # Try more generic approach - look for any button with "seat" or "select" in text
+            try:
+                # Try get_by_role with case-insensitive partial match
+                all_buttons = iframe.locator('button')
+                count = await all_buttons.count()
+                for i in range(count):
+                    button = all_buttons.nth(i)
+                    text = await button.text_content()
+                    if text and ('select' in text.lower() or 'seat' in text.lower()):
+                        if await button.is_visible(timeout=2000):
+                            await button.click()
+                            logger.info("clicked_select_seats_generic", text=text)
+                            return True
+            except:
+                pass
+                
+        except Exception as e:
+            logger.warning("failed_to_click_in_iframe", error=str(e))
         
         return False
     
@@ -258,6 +462,24 @@ class BrowserAutomation:
                 if await button.is_visible(timeout=3000):
                     await button.click()
                     logger.info("clicked_select_seats", selector=selector)
+                    return True
+            except:
+                continue
+        
+        # Try additional selectors
+        additional_selectors = [
+            'button:has-text("Choose Seats")',
+            'a:has-text("Choose Seats")',
+            '[class*="select-seats"]',
+            '[data-testid*="select-seats"]',
+        ]
+        
+        for selector in additional_selectors:
+            try:
+                button = self.page.locator(selector).first
+                if await button.is_visible(timeout=2000):
+                    await button.click()
+                    logger.info("clicked_select_seats_additional", selector=selector)
                     return True
             except:
                 continue

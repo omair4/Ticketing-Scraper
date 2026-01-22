@@ -12,14 +12,14 @@ class ScraperConfig:
     # Browser settings
     headless: bool = False  # Set to True for production
     browser_timeout: int = 30000  # 30 seconds
-    navigation_timeout: int = 15000  # 15 seconds
+    navigation_timeout: int = 30000  # 30 seconds (increased for slow-loading pages)
     
     # Network settings
     request_timeout: int = 30  # seconds for httpx
     
     # Wait times (milliseconds)
-    click_delay: int = 1000  # Wait after clicking buttons
-    page_load_delay: int = 2000  # Wait for dynamic content
+    click_delay: int = 2000  # Wait after clicking buttons (increased for iframe loading)
+    page_load_delay: int = 3000  # Wait for dynamic content (increased for modal/iframe)
     
     # Retry settings
     max_retries: int = 3
