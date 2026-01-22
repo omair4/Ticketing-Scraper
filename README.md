@@ -47,7 +47,7 @@ Options:
 
 ```bash
 # Scenario 1: seats.io event (Andrew Callaghan)
-python main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/andrew-callaghan/andrew-callaghan/681d11117d3a4df5fd2d2c24"
+python3.13 main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/andrew-callaghan/andrew-callaghan/681d11117d3a4df5fd2d2c24"
 
 # Scenario 2: Direct API event (Byun Jin Sub)
 python main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/artist/byun-jin-sub-wish-list/694ee2570472d0f8bde99b4e"

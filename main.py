@@ -69,8 +69,8 @@ async def scrape_event(event_url: str, config: ScraperConfig = None) -> ScrapeRe
     # Step 1: Navigate to the event and capture API responses
     async with BrowserAutomation(config) as browser:
         logger.info("step_1", description="Navigating to event page...")
-        
-        nav_result = await browser.navigate_to_seats(event_url)
+
+        nav_result = await browser.navigate_to_seats_with_retry(event_url)
         
         if not nav_result.success:
             logger.error("navigation_failed", error=nav_result.error)

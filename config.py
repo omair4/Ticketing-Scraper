@@ -12,7 +12,15 @@ class ScraperConfig:
     # Browser settings
     headless: bool = False  # Set to True for production
     browser_timeout: int = 30000  # 30 seconds
-    navigation_timeout: int = 15000  # 15 seconds
+    navigation_timeout: int = 15000  # 15 seconds (legacy, kept for compatibility)
+
+    # Enhanced timeout settings
+    dom_load_timeout: int = 30000  # Timeout for domcontentloaded
+    api_response_timeout: int = 25000  # Timeout for API responses
+    element_wait_timeout: int = 20000  # Timeout for element visibility
+
+    # Polling settings for API response waits
+    api_poll_interval: int = 500  # Poll every 500ms for API responses
     
     # Network settings
     request_timeout: int = 30  # seconds for httpx
@@ -63,9 +71,18 @@ BUTTON_SELECTORS = {
     ],
     # Select seats button (scenario 1)
     "select_seats": [
+        # Exact matches (fast, try first)
         'button:has-text("Select Seats")',
+        'button:has-text("Select My Seats")',
         'a:has-text("Select Seats")',
-        '[class*="select"]:has-text("Select")',
+        'a:has-text("Select My Seats")',
+        # Partial matches with common variations
+        'button:has-text("Choose Seats")',
+        'button:has-text("Pick Seats")',
+        'a:has-text("Choose Seats")',
+        # Class-based with text
+        '[class*="select"]:has-text("Seats")',
+        '[class*="choose"]:has-text("Seats")',
     ],
     # Modal/popup close buttons
     "close_modal": [
