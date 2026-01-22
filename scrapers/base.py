@@ -59,13 +59,6 @@ class BaseScraper(ABC):
     def find_response_by_pattern(self, responses: list[CapturedResponse], 
                                   pattern: str) -> Optional[CapturedResponse]:
         """Find first response matching a URL pattern, prioritizing API endpoints"""
-        # #region agent log
-        import json as json_module
-        matching_responses = [r for r in responses if pattern in r.url]
-        with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
-            f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"base.py:59","message":"find_response_by_pattern","data":{"pattern":pattern,"matching_count":len(matching_responses),"matching_urls":[r.url for r in matching_responses[:5]],"has_body_count":sum(1 for r in matching_responses if r.body)},"timestamp":int(__import__('time').time()*1000)}) + '\n')
-        # #endregion
-        
         # Priority order: API endpoints first, then responses with bodies, then any match
         api_keywords = ['/api/', 'object-statuses', 'seating-plan']
         

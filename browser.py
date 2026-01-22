@@ -153,12 +153,6 @@ class BrowserAutomation:
                     body=body
                 )
                 self.captured_responses.append(captured)
-                # #region agent log
-                if 'object-statuses' in url or '/api/events/seated/' in url:
-                    import json as json_module
-                    with open('/Users/mac/Documents/Upwork/admitone_scraper/.cursor/debug.log', 'a') as f:
-                        f.write(json_module.dumps({"sessionId":"debug-session","runId":"run1","hypothesisId":"C","location":"browser.py:136","message":"critical_api_captured","data":{"url":url,"status":response.status,"content_type":content_type,"has_body":body is not None,"body_length":len(body) if body else 0,"body_preview":body[:200] if body else None},"timestamp":int(__import__('time').time()*1000)}) + '\n')
-                # #endregion
                 logger.debug("captured_response", url=url[:100], status=response.status, has_body=body is not None)
             except Exception as e:
                 logger.warning("response_capture_failed", url=url, error=str(e))
