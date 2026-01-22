@@ -111,7 +111,9 @@ class BrowserAutomation:
             '/api/',
             'object-statuses',
             'seating-plan',
-            '/events/'
+            '/events/',
+            'charts',
+            'published'
         ]
         
         if any(pattern in url for pattern in relevant_patterns):
@@ -123,7 +125,8 @@ class BrowserAutomation:
                 is_critical_api = any(critical in url for critical in [
                     '/api/events/seated/',
                     'object-statuses',
-                    'seating-plan/availability'
+                    'seating-plan/availability',
+                    'charts/published'
                 ])
                 
                 # Try to get response body

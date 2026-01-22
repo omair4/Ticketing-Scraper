@@ -22,7 +22,7 @@ import structlog
 from scrapers.base import BaseScraper
 from models import ScrapeResult, Seat, EventInfo, SeatStatus, PriceLevel
 from browser import CapturedResponse
-from utils.decoder import decode_seatsio_response, parse_json_safe, extract_event_id_from_url
+from utils.decoder import decode_seatsio_response, decode_charts_response, parse_json_safe, extract_event_id_from_url
 
 logger = structlog.get_logger()
 
@@ -144,12 +144,274 @@ class SeatsIOScraper(BaseScraper):
             event_url=event_url
         )
     
+    async def _extract_chart_data(self, responses: list[CapturedResponse]) -> Optional[Dict[str, Any]]:
+        """
+        Extract chart data from seats.io charts/published API.
+        
+        Returns:
+            Dict with:
+            - 'category_map': {categoryKey: category_label}
+            - 'chart_seats': list of {section, row, seat_label, categoryKey, uuid}
+            Or None if chart data not found
+        """
+        # Find charts/published response
+        charts_response = self.find_response_by_pattern(responses, 'charts/published')
+        if not charts_response:
+            # Try alternative patterns
+            charts_response = self.find_response_by_pattern(responses, 'charts')
+        
+        if not charts_response or not charts_response.body:
+            logger.debug("no_charts_response_found")
+            return None
+        
+        try:
+            # Decode the response
+            decoded_json = decode_charts_response(charts_response.body)
+            if not decoded_json:
+                logger.warning("failed_to_decode_charts_response")
+                return None
+            
+            # Parse JSON
+            chart_data = json.loads(decoded_json)
+            
+            # Extract category map: categoryKey -> category label
+            category_map = {}
+            categories = chart_data.get('categories', {})
+            category_list = categories.get('list', [])
+            for cat in category_list:
+                if isinstance(cat, dict) and 'key' in cat and 'label' in cat:
+                    category_map[str(cat['key'])] = cat['label']
+            
+            # Extract seat data from rows
+            chart_seats = []
+            sub_chart = chart_data.get('subChart', {})
+            rows = sub_chart.get('rows', [])
+            
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                
+                row_label = row.get('label', '')
+                section_label = row.get('sectionLabel', '')
+                seats = row.get('seats', [])
+                
+                for seat in seats:
+                    if not isinstance(seat, dict):
+                        continue
+                    
+                    seat_label = seat.get('label', '')
+                    category_key = seat.get('categoryKey')
+                    uuid = seat.get('uuid', '')
+                    
+                    if not uuid:  # Skip seats without uuid (can't match to availability)
+                        continue
+                    
+                    chart_seats.append({
+                        'section': section_label or 'Unknown',
+                        'row': row_label or 'Unknown',
+                        'seat_label': seat_label or '',
+                        'categoryKey': str(category_key) if category_key is not None else None,
+                        'uuid': uuid
+                    })
+            
+            logger.info("extracted_chart_data", 
+                       categories=len(category_map), 
+                       seats=len(chart_seats))
+            
+            return {
+                'category_map': category_map,
+                'chart_seats': chart_seats
+            }
+            
+        except Exception as e:
+            logger.error("chart_extraction_failed", error=str(e))
+            return None
+    
     async def _extract_seats(self, responses: list[CapturedResponse],
                             price_levels: Dict[str, PriceLevel]) -> list[Seat]:
         """
-        Extract seats from seats.io object-statuses API.
+        Extract seats by combining data from 3 APIs:
+        1. Charts API - section, row, seat label, categoryKey, uuid
+        2. Object-statuses API - uuid → availability status
+        3. Embed API - categoryKey → price (already in price_levels)
+        """
+        # Step 1: Try to extract chart data (new approach)
+        chart_data = await self._extract_chart_data(responses)
         
-        The response may be hex-encoded and needs decoding.
+        if chart_data:
+            # Use new 3-API combination approach
+            return await self._combine_seats_from_apis(chart_data, responses, price_levels)
+        else:
+            # Fallback to old approach (using object-statuses labels)
+            logger.info("charts_api_not_found_using_fallback")
+            return await self._extract_seats_fallback(responses, price_levels)
+    
+    async def _combine_seats_from_apis(self, chart_data: Dict[str, Any],
+                                      responses: list[CapturedResponse],
+                                      price_levels: Dict[str, PriceLevel]) -> list[Seat]:
+        """
+        Combine data from all 3 APIs to build complete seat objects.
+        
+        Args:
+            chart_data: From _extract_chart_data() - contains category_map and chart_seats
+            responses: Captured API responses
+            price_levels: Pricing data from embed API
+        
+        Returns:
+            List of complete Seat objects
+        """
+        seats = []
+        category_map = chart_data.get('category_map', {})
+        chart_seats = chart_data.get('chart_seats', [])
+        
+        # Step 2: Extract availability from object-statuses API (uuid → status)
+        availability_map = await self._extract_availability_map(responses)
+        
+        # Step 3: Combine all data
+        for chart_seat in chart_seats:
+            uuid = chart_seat.get('uuid')
+            section = chart_seat.get('section', 'Unknown')
+            row = chart_seat.get('row', 'Unknown')
+            seat_label = chart_seat.get('seat_label', '')
+            category_key = chart_seat.get('categoryKey')
+            
+            # Get availability status by UUID
+            status = SeatStatus.UNKNOWN
+            if uuid and uuid in availability_map:
+                status_str = availability_map[uuid]
+                status = self.parse_seat_status(status_str)
+            else:
+                # Default to available if not found (or log warning)
+                status = SeatStatus.AVAILABLE
+                logger.debug("uuid_not_found_in_availability", uuid=uuid[:20] if uuid else None)
+            
+            # Get price by categoryKey
+            price, service_fee, level_name = self._get_price_by_category_key(
+                category_key, category_map, price_levels
+            )
+            
+            # Create seat object
+            seat = Seat(
+                section=self.normalize_section_name(section),
+                row=row,
+                seat=seat_label or "GA",
+                price=price,
+                service_fee=service_fee,
+                status=status,
+                price_level=level_name
+            )
+            seats.append(seat)
+        
+        logger.info("combined_seats_from_apis", count=len(seats))
+        return seats
+    
+    async def _extract_availability_map(self, responses: list[CapturedResponse]) -> Dict[str, str]:
+        """
+        Extract availability status from object-statuses API.
+        
+        Returns:
+            Dict mapping uuid -> status string
+        """
+        availability_map = {}
+        
+        # Find seats.io response
+        seatsio_response = self.find_response_by_pattern(responses, 'object-statuses')
+        if not seatsio_response:
+            seatsio_response = self.find_response_by_pattern(responses, 'seatsio.net')
+        
+        if not seatsio_response or not seatsio_response.body:
+            logger.warning("no_seatsio_response_for_availability")
+            return availability_map
+        
+        try:
+            # Decode response
+            decoded_json = decode_seatsio_response(seatsio_response.body)
+            if not decoded_json:
+                return availability_map
+            
+            parsed_data = json.loads(decoded_json)
+            
+            # Handle different response formats
+            seat_list = []
+            if isinstance(parsed_data, list):
+                seat_list = parsed_data
+            elif isinstance(parsed_data, dict):
+                # Could be grouped by status
+                for status_key, items in parsed_data.items():
+                    if isinstance(items, list):
+                        seat_list.extend(items)
+            
+            # Build uuid -> status map
+            for seat_data in seat_list:
+                if not isinstance(seat_data, dict):
+                    continue
+                
+                uuid = seat_data.get('uuid') or seat_data.get('objectLabelOrUuid', '')
+                status = seat_data.get('status', 'free')
+                
+                if uuid:
+                    availability_map[uuid] = status
+            
+            logger.info("extracted_availability_map", count=len(availability_map))
+            
+        except Exception as e:
+            logger.error("availability_extraction_failed", error=str(e))
+        
+        return availability_map
+    
+    def _get_price_by_category_key(self, category_key: Optional[str],
+                                  category_map: Dict[str, str],
+                                  price_levels: Dict[str, PriceLevel]) -> tuple[Decimal, Optional[Decimal], str]:
+        """
+        Get price for a seat by matching categoryKey.
+        
+        Args:
+            category_key: Category key from chart data
+            category_map: Map of categoryKey -> category label from charts API
+            price_levels: Price levels from embed API
+        
+        Returns:
+            Tuple of (price, service_fee, level_name)
+        """
+        default_price = Decimal('0')
+        
+        if not category_key:
+            return default_price, None, "Unknown"
+        
+        # Step 1: Get category label from category_map
+        category_label = category_map.get(category_key, '')
+        
+        # Step 2: Try to match by categoryKey directly to level_id
+        if category_key in price_levels:
+            level = price_levels[category_key]
+            return level.price, level.service_fee, level.level_name
+        
+        # Step 3: Try to match category label to level name
+        if category_label and hasattr(self, '_price_by_name'):
+            label_lower = category_label.lower().strip()
+            if label_lower in self._price_by_name:
+                level = self._price_by_name[label_lower]
+                return level.price, level.service_fee, level.level_name
+            
+            # Partial match
+            for name, level in self._price_by_name.items():
+                if label_lower in name or name in label_lower:
+                    return level.price, level.service_fee, level.level_name
+        
+        # Step 4: Fallback - use first active price level
+        if price_levels:
+            for level in price_levels.values():
+                if level.active:
+                    self.add_warning(f"Using default price for categoryKey {category_key} (label: {category_label})")
+                    return level.price, level.service_fee, level.level_name
+        
+        return default_price, None, category_label or "Unknown"
+    
+    async def _extract_seats_fallback(self, responses: list[CapturedResponse],
+                                     price_levels: Dict[str, PriceLevel]) -> list[Seat]:
+        """
+        Fallback method: Extract seats using old approach (object-statuses labels only).
+        Used when charts API is not available.
         """
         seats = []
         
@@ -192,7 +454,7 @@ class SeatsIOScraper(BaseScraper):
                     seats.extend(self._parse_seat_list(seat_list, price_levels, 
                                                        default_status=status_key))
         
-        logger.info("extracted_seats", count=len(seats))
+        logger.info("extracted_seats_fallback", count=len(seats))
         return seats
     
     def _parse_seat_list(self, seat_list: list, price_levels: Dict[str, PriceLevel],

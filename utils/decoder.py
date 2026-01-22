@@ -65,6 +65,57 @@ def decode_seatsio_response(response_text: str) -> Optional[str]:
     return None
 
 
+def decode_charts_response(response_text: str) -> Optional[str]:
+    """
+    Decode seats.io charts/published response.
+    
+    The response is hex-encoded JSON with offset 0x29 (41).
+    Uses the same decoding logic as object-statuses API.
+    
+    Args:
+        response_text: Raw response text (hex-encoded)
+    
+    Returns:
+        Decoded JSON string or None if decoding fails
+    """
+    if not response_text:
+        return None
+    
+    # Try 1: Direct JSON parse (in case it's already decoded)
+    try:
+        json.loads(response_text)
+        return response_text
+    except json.JSONDecodeError:
+        pass
+    
+    # Try 2: Hex offset decode with offset 0x29 (41)
+    cleaned = response_text.strip()
+    if all(c in '0123456789abcdefABCDEF' for c in cleaned):
+        try:
+            decoded = decode_hex_offset(cleaned, offset=0x29)  # 0x29 = 41
+            if decoded:
+                # Verify it's valid JSON
+                json.loads(decoded)
+                return decoded
+        except Exception as e:
+            logger.debug("charts_hex_decode_failed", error=str(e))
+            pass
+    
+    # Try 3: Use the same logic as seatsio_response (base64 + offset)
+    try:
+        import base64
+        if any(c in response_text for c in '+/=') or len(response_text) > 1000:
+            binary_data = base64.b64decode(response_text)
+            decoded_bytes = bytes((b - 0x29) % 256 for b in binary_data)
+            decoded = decoded_bytes.decode('utf-8')
+            json.loads(decoded)  # Verify
+            return decoded
+    except Exception:
+        pass
+    
+    return None
+
+
 def decode_hex_offset(hex_string: str, offset: int = 41) -> str:
     """
     Decode hex-encoded string with byte offset subtraction.
