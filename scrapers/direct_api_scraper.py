@@ -48,8 +48,8 @@ class DirectAPIScraper(BaseScraper):
         # Step 1: Get event data (includes price bands)
         event_data, price_bands = await self._extract_event_data(captured_responses)
         
-        # Step 2: Get ticket types with actual prices
-        ticket_prices = await self._extract_ticket_prices(captured_responses, event_data)
+        # Step 2: Get ticket types with actual prices and fees
+        ticket_prices, service_fees = await self._extract_ticket_prices_and_fees(captured_responses, event_data)
         
         if not ticket_prices and not price_bands:
             self.add_warning("Could not extract pricing data - prices may be missing")
@@ -58,7 +58,7 @@ class DirectAPIScraper(BaseScraper):
         event_info = await self._extract_event_info(event_data, captured_responses, event_url)
         
         # Step 4: Get seat availability
-        seats = await self._extract_seats(captured_responses, price_bands, ticket_prices)
+        seats = await self._extract_seats(captured_responses, price_bands, ticket_prices, service_fees)
         
         if not seats:
             self.add_error("No seats extracted from availability API")
@@ -122,19 +122,76 @@ class DirectAPIScraper(BaseScraper):
         
         return event_data, price_bands
     
-    async def _extract_ticket_prices(self, responses: list[CapturedResponse], 
-                                     event_data: dict) -> Dict[int, Decimal]:
+    async def _extract_ticket_prices_and_fees(self, responses: list[CapturedResponse], 
+                                             event_data: dict) -> tuple[Dict[int, Decimal], Dict[int, Decimal]]:
         """
-        Extract actual ticket prices.
+        Extract ticket prices and service fees from the tickets array.
         
-        Prices may come from:
-        1. ticket_types array in event data
-        2. A separate pricing API call
-        3. Within the seating plan data
+        Returns:
+            Tuple of (prices_dict, fees_dict) where both map price_band_id -> amount in dollars
+        """
+        prices = {}  # price_band_id -> price (in dollars)
+        fees = {}    # price_band_id -> service_fee (in dollars)
+        
+        # Extract from props.tickets array (Scenario 2 structure)
+        tickets_data = None
+        if 'props' in event_data:
+            tickets_data = event_data.get('props', {}).get('tickets', [])
+        
+        if tickets_data and isinstance(tickets_data, list):
+            for ticket_group in tickets_data:
+                if not isinstance(ticket_group, dict):
+                    continue
+                
+                items = ticket_group.get('items', [])
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    
+                    price_band_id = item.get('price_band_id')
+                    if not price_band_id:
+                        continue
+                    
+                    # Get pricing array
+                    pricing = item.get('pricing', [])
+                    if pricing and isinstance(pricing, list) and len(pricing) > 0:
+                        price_info = pricing[0]
+                        if isinstance(price_info, dict):
+                            # Extract total_price (includes fees) - convert from cents to dollars
+                            total_price_cents = price_info.get('total_price')
+                            if total_price_cents is not None:
+                                prices[price_band_id] = Decimal(str(total_price_cents)) / Decimal('100')
+                            
+                            # Extract service fees - convert from cents to dollars
+                            customer_fees_cents = price_info.get('customer_fees', 0)
+                            if customer_fees_cents:
+                                fees[price_band_id] = Decimal(str(customer_fees_cents)) / Decimal('100')
+                            
+                            logger.debug("extracted_price_and_fees", 
+                                       price_band_id=price_band_id, 
+                                       total_price_cents=total_price_cents,
+                                       fees_cents=customer_fees_cents,
+                                       price_dollars=float(prices.get(price_band_id, 0)),
+                                       fees_dollars=float(fees.get(price_band_id, 0)))
+        
+        if prices:
+            logger.info("extracted_ticket_prices_from_tickets_array", 
+                       price_count=len(prices), 
+                       fees_count=len(fees))
+            return prices, fees
+        
+        # Fallback: Try old structure
+        prices = await self._extract_ticket_prices_fallback(responses, event_data)
+        return prices, {}
+    
+    async def _extract_ticket_prices_fallback(self, responses: list[CapturedResponse], 
+                                             event_data: dict) -> Dict[int, Decimal]:
+        """
+        Fallback method to extract prices from old structure.
         """
         prices = {}  # price_band_id -> price
         
-        # Try to find ticket types in event data
+        # Try to find ticket types in event data (old structure)
         ticket_types = event_data.get('ticket_types', [])
         
         if not ticket_types and 'props' in event_data:
@@ -148,10 +205,10 @@ class DirectAPIScraper(BaseScraper):
                     prices[band_id] = Decimal(str(price))
         
         if prices:
-            logger.info("extracted_ticket_prices", count=len(prices))
+            logger.info("extracted_ticket_prices_from_ticket_types", count=len(prices))
             return prices
         
-        # Look for prices in other API responses
+        # Last resort: Look for prices in other API responses
         for response in responses:
             if response.body and 'price' in response.body.lower():
                 try:
@@ -159,15 +216,6 @@ class DirectAPIScraper(BaseScraper):
                     self._find_prices_recursive(data, prices)
                 except:
                     pass
-        
-        # If still no prices, try hardcoded mapping from the seating plan
-        # This is based on the sample data where prices were visible
-        if not prices and 'seating_plan' in event_data:
-            sp = event_data.get('seating_plan', {})
-            # Check if schema has price info
-            schema = sp.get('schema', {})
-            if schema:
-                self._extract_prices_from_schema(schema, prices)
         
         return prices
     
@@ -263,7 +311,8 @@ class DirectAPIScraper(BaseScraper):
     
     async def _extract_seats(self, responses: list[CapturedResponse],
                             price_bands: Dict[int, PriceBand],
-                            ticket_prices: Dict[int, Decimal]) -> list[Seat]:
+                            ticket_prices: Dict[int, Decimal],
+                            service_fees: Dict[int, Decimal] = None) -> list[Seat]:
         """
         Extract seats from the seating-plan/availability API.
         
@@ -302,7 +351,7 @@ class DirectAPIScraper(BaseScraper):
             
             for seat_data in seats_data:
                 try:
-                    seat = self._parse_seat(seat_data, price_bands, ticket_prices)
+                    seat = self._parse_seat(seat_data, price_bands, ticket_prices, service_fees or {})
                     if seat:
                         seats.append(seat)
                 except Exception as e:
@@ -313,12 +362,12 @@ class DirectAPIScraper(BaseScraper):
         
         # If we didn't get seats from availability, try parsing from seating plan schema
         if not seats:
-            seats = await self._extract_seats_from_schema(responses, price_bands, ticket_prices)
+            seats = await self._extract_seats_from_schema(responses, price_bands, ticket_prices, service_fees or {})
         
         return seats
     
     def _parse_seat(self, seat_data: dict, price_bands: Dict[int, PriceBand],
-                   ticket_prices: Dict[int, Decimal]) -> Optional[Seat]:
+                   ticket_prices: Dict[int, Decimal], service_fees: Dict[int, Decimal] = None) -> Optional[Seat]:
         """
         Parse a single seat from availability data.
         
@@ -377,7 +426,7 @@ class DirectAPIScraper(BaseScraper):
         else:
             status = SeatStatus.AVAILABLE if is_available else SeatStatus.BOOKED
         
-        # Get price
+        # Get price and fees
         price_band_id = seat_data.get('price_band_id')
         price = Decimal('0')
         service_fee = None
@@ -386,6 +435,10 @@ class DirectAPIScraper(BaseScraper):
         # First try ticket_prices mapping
         if price_band_id and price_band_id in ticket_prices:
             price = ticket_prices[price_band_id]
+        
+        # Get service fee if available
+        if service_fees and price_band_id and price_band_id in service_fees:
+            service_fee = service_fees[price_band_id]
         
         # Get level name from price_bands
         if price_band_id and price_band_id in price_bands:
@@ -410,7 +463,8 @@ class DirectAPIScraper(BaseScraper):
     
     async def _extract_seats_from_schema(self, responses: list[CapturedResponse],
                                          price_bands: Dict[int, PriceBand],
-                                         ticket_prices: Dict[int, Decimal]) -> list[Seat]:
+                                         ticket_prices: Dict[int, Decimal],
+                                         service_fees: Dict[int, Decimal] = None) -> list[Seat]:
         """
         Extract seats from seating plan schema if availability API didn't have seat details.
         
@@ -491,13 +545,18 @@ class DirectAPIScraper(BaseScraper):
                         if price_band_id in price_bands:
                             level_name = price_bands[price_band_id].name
                     
+                    # Get service fee if available
+                    fee = None
+                    if service_fees and price_band_id and price_band_id in service_fees:
+                        fee = service_fees[price_band_id]
+                    
                     if block_label and row_label:
                         seats.append(Seat(
                             section=self.normalize_section_name(block_label),
                             row=row_label,
                             seat=seat_num,
                             price=price,
-                            service_fee=None,
+                            service_fee=fee,
                             status=SeatStatus.AVAILABLE,  # Schema doesn't have status
                             price_level=level_name,
                             price_level_id=str(price_band_id) if price_band_id else None

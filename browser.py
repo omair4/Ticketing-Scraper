@@ -126,7 +126,8 @@ class BrowserAutomation:
                     '/api/events/seated/',
                     'object-statuses',
                     'seating-plan/availability',
-                    'charts/published'
+                    'charts/published',
+                    'tickets.admitone.com/events/',  # Direct API endpoints
                 ])
                 
                 # Try to get response body
@@ -207,6 +208,20 @@ class BrowserAutomation:
             # Wait for modal/iframe to appear or redirect
             logger.info("waiting_for_modal_or_redirect")
             await asyncio.sleep(self.config.click_delay / 1000)  # Wait after clicking Buy Now
+            
+            # Check for modal dialog with second Buy Now button (Scenario 2: direct API)
+            modal_buy_now_clicked = await self._click_modal_buy_now_button()
+            
+            if modal_buy_now_clicked:
+                logger.info("modal_buy_now_clicked", scenario="direct_api_modal_flow")
+                # Wait for seating plan to load after clicking second Buy Now
+                await asyncio.sleep(2)
+                try:
+                    await self.page.wait_for_load_state('networkidle', timeout=20000)
+                except:
+                    logger.debug("networkidle_timeout_after_modal_buy", msg="Continuing anyway")
+                # Give additional time for API calls (seating plan APIs may take time)
+                await asyncio.sleep(5)
             
             # Check if a modal/iframe appeared (Scenario 1: seats.io)
             modal_iframe = await self._wait_for_modal_iframe(timeout=10000)
@@ -354,6 +369,110 @@ class BrowserAutomation:
             logger.debug("text_search_failed", error=str(e))
         
         logger.warning("buy_button_not_found")
+        return False
+    
+    async def _click_modal_buy_now_button(self) -> bool:
+        """
+        Try to click the second "Buy Now" button in a modal dialog.
+        
+        This is for Scenario 2 where after clicking the first Buy Now,
+        a modal appears with an iframe containing another Buy Now button.
+        
+        Returns:
+            True if button was found and clicked
+        """
+        try:
+            # Wait for modal/iframe to appear - the modal contains an iframe
+            # Look for iframe that contains tickets.admitone.com
+            iframe_selectors = [
+                'iframe[title*="community_card"]',
+                'iframe[title*="tickets"]',
+                'iframe[src*="tickets.admitone.com"]',
+                'iframe[src*="admitone"]',
+            ]
+            
+            iframe_element = None
+            for selector in iframe_selectors:
+                try:
+                    iframe_element = await self.page.wait_for_selector(
+                        selector,
+                        timeout=8000,
+                        state='attached'
+                    )
+                    if iframe_element:
+                        logger.info("modal_iframe_found", selector=selector)
+                        break
+                except:
+                    continue
+            
+            if not iframe_element:
+                logger.debug("no_modal_iframe_found")
+                return False
+            
+            # Get the iframe's content frame
+            iframe = await iframe_element.content_frame()
+            if not iframe:
+                logger.debug("could_not_get_iframe_content_frame")
+                return False
+            
+            # Wait for iframe content to load
+            try:
+                await iframe.wait_for_load_state('domcontentloaded', timeout=10000)
+                await asyncio.sleep(1)  # Give content time to render
+            except:
+                logger.debug("iframe_load_timeout", msg="Continuing anyway")
+            
+            # Try to find and click Buy Now button inside the iframe
+            # First try role-based selector (most reliable)
+            try:
+                buy_now_button = iframe.get_by_role('button', name='Buy Now').first
+                if await buy_now_button.is_visible(timeout=5000):
+                    await buy_now_button.click()
+                    logger.info("clicked_modal_buy_now_in_iframe", method="get_by_role")
+                    return True
+            except Exception as e:
+                logger.debug("iframe_buy_now_by_role_failed", error=str(e))
+            
+            # Try various selectors for Buy Now in iframe
+            iframe_buy_selectors = [
+                'button:has-text("Buy Now")',
+                'a:has-text("Buy Now")',
+                '[class*="buy"]:has-text("Buy Now")',
+                'button[aria-label*="Buy Now"]',
+            ]
+            
+            for selector in iframe_buy_selectors:
+                try:
+                    button = iframe.locator(selector).first
+                    if await button.is_visible(timeout=3000):
+                        await button.click()
+                        logger.info("clicked_modal_buy_now_in_iframe", selector=selector)
+                        return True
+                except Exception as e:
+                    logger.debug("iframe_buy_selector_failed", selector=selector, error=str(e))
+                    continue
+            
+            # Last resort: find any button with "Buy Now" text in iframe
+            try:
+                all_buttons = iframe.locator('button, a')
+                count = await all_buttons.count()
+                for i in range(min(count, 30)):  # Check first 30 buttons
+                    button = all_buttons.nth(i)
+                    try:
+                        text = await button.text_content()
+                        if text and 'buy now' in text.lower():
+                            if await button.is_visible(timeout=2000):
+                                await button.click()
+                                logger.info("clicked_modal_buy_now_in_iframe_generic", text=text)
+                                return True
+                    except:
+                        continue
+            except Exception as e:
+                logger.debug("generic_iframe_buy_search_failed", error=str(e))
+            
+        except Exception as e:
+            logger.warning("click_modal_buy_now_failed", error=str(e))
+        
         return False
     
     async def _wait_for_modal_iframe(self, timeout: int = 10000) -> Optional[Page]:
@@ -516,16 +635,17 @@ class BrowserAutomation:
         Returns:
             'seatsio' or 'direct_api'
         """
+        # First check for seatsio indicators
         for response in self.captured_responses:
-            if 'seatsio.net' in response.url:
+            if 'seatsio.net' in response.url or 'embed.admitonelive.com' in response.url:
                 return 'seatsio'
-            if 'tickets.admitone.com' in response.url and 'seating-plan' in response.url:
-                return 'direct_api'
         
-        # Check for embed.admitonelive.com (also seatsio scenario)
+        # Check for direct API indicators (tickets.admitone.com)
         for response in self.captured_responses:
-            if 'embed.admitonelive.com' in response.url:
-                return 'seatsio'
+            if 'tickets.admitone.com' in response.url:
+                # Check for specific endpoints
+                if 'seating-plan/availability' in response.url or '/events/' in response.url:
+                    return 'direct_api'
         
         return 'unknown'
     
