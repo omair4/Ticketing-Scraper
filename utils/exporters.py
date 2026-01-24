@@ -68,7 +68,7 @@ def export_to_json(result: ScrapeResult, output_dir: str = "./output") -> str:
 
 def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
     """
-    Export seats to CSV file.
+    Export seats, ticket categories, and resale listings to CSV file.
     
     Returns:
         Path to created file
@@ -79,8 +79,10 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
     filename = generate_filename(result.event.event_name, "csv")
     filepath = output_path / filename
     
-    # Define CSV columns
+    # Define CSV columns - unified format for all types
     fieldnames = [
+        'type',
+        'category_name',
         'section',
         'row', 
         'seat',
@@ -88,6 +90,9 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
         'service_fee',
         'total_price',
         'status',
+        'quantity',
+        'current_stock',
+        'is_out_of_stock',
         'price_level',
         'event_name',
         'venue',
@@ -98,8 +103,11 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         
+        # Export seats
         for seat in result.seats:
             writer.writerow({
+                'type': 'seat',
+                'category_name': '',
                 'section': seat.section,
                 'row': seat.row,
                 'seat': seat.seat,
@@ -107,13 +115,63 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
                 'service_fee': float(seat.service_fee) if seat.service_fee else '',
                 'total_price': float(seat.total_price),
                 'status': seat.status.value,
+                'quantity': '',
+                'current_stock': '',
+                'is_out_of_stock': '',
                 'price_level': seat.price_level or '',
                 'event_name': result.event.event_name,
                 'venue': result.event.venue_name,
                 'event_date': result.event.event_date or ''
             })
+        
+        # Export ticket categories
+        for category in result.ticket_categories:
+            writer.writerow({
+                'type': 'ticket_category',
+                'category_name': category.category_name,
+                'section': '',
+                'row': '',
+                'seat': '',
+                'price': float(category.price),
+                'service_fee': float(category.service_fee) if category.service_fee else '',
+                'total_price': float(category.total_price),
+                'status': 'available' if category.is_available else 'out_of_stock',
+                'quantity': category.current_stock if category.current_stock is not None else '',
+                'current_stock': category.current_stock if category.current_stock is not None else '',
+                'is_out_of_stock': category.is_out_of_stock,
+                'price_level': category.group_name or category.category_name,
+                'event_name': result.event.event_name,
+                'venue': result.event.venue_name,
+                'event_date': result.event.event_date or ''
+            })
+        
+        # Export resale listings
+        for listing in result.resale_listings:
+            writer.writerow({
+                'type': 'resale_listing',
+                'category_name': listing.ticket_category,
+                'section': '',
+                'row': '',
+                'seat': '',
+                'price': float(listing.price_per_ticket),
+                'service_fee': float(listing.service_fee_per_ticket) if listing.service_fee_per_ticket else '',
+                'total_price': float(listing.total_price_per_ticket),
+                'status': 'available',
+                'quantity': listing.quantity,
+                'current_stock': '',
+                'is_out_of_stock': '',
+                'price_level': listing.ticket_category,
+                'event_name': result.event.event_name,
+                'venue': result.event.venue_name,
+                'event_date': result.event.event_date or ''
+            })
     
-    logger.info("exported_csv", filepath=str(filepath), seat_count=len(result.seats))
+    total_items = len(result.seats) + len(result.ticket_categories) + len(result.resale_listings)
+    logger.info("exported_csv", filepath=str(filepath), 
+               seat_count=len(result.seats),
+               category_count=len(result.ticket_categories),
+               resale_count=len(result.resale_listings),
+               total_items=total_items)
     return str(filepath)
 
 
@@ -154,8 +212,15 @@ def print_summary(result: ScrapeResult):
     print(f"Date: {result.event.event_date or 'N/A'}")
     print(f"Scenario: {result.scenario_type}")
     print("-"*60)
-    print(f"Total Seats Found: {result.total_seats_found}")
-    print(f"Available Seats: {result.available_seats_count}")
+    if result.seats:
+        print(f"Total Seats Found: {result.total_seats_found}")
+        print(f"Available Seats: {result.available_seats_count}")
+    if result.ticket_categories:
+        available_categories = sum(1 for c in result.ticket_categories if c.is_available)
+        print(f"Ticket Categories: {len(result.ticket_categories)} (Available: {available_categories})")
+    if result.resale_listings:
+        total_resale_tickets = sum(l.quantity for l in result.resale_listings)
+        print(f"Resale Listings: {len(result.resale_listings)} (Total Tickets: {total_resale_tickets})")
     if result.min_price and result.max_price:
         print(f"Price Range: ${result.min_price:.2f} - ${result.max_price:.2f}")
     print("-"*60)
@@ -175,5 +240,20 @@ def print_summary(result: ScrapeResult):
         print("\nSample Seats (first 5):")
         for seat in result.seats[:5]:
             print(f"  {seat.to_display_string()} - ${seat.total_price:.2f} ({seat.status.value})")
+    
+    # Show ticket categories
+    if result.ticket_categories:
+        print(f"\nTicket Categories ({len(result.ticket_categories)}):")
+        for category in result.ticket_categories:
+            stock_info = f" (Stock: {category.current_stock})" if category.current_stock is not None else ""
+            print(f"  {category.category_name} - ${category.total_price:.2f}{stock_info}")
+    
+    # Show resale listings
+    if result.resale_listings:
+        print(f"\nResale Listings ({len(result.resale_listings)}):")
+        for listing in result.resale_listings[:5]:
+            print(f"  {listing.ticket_category} - ${listing.total_price_per_ticket:.2f} per ticket (Qty: {listing.quantity})")
+        if len(result.resale_listings) > 5:
+            print(f"  ... and {len(result.resale_listings) - 5} more")
     
     print("="*60 + "\n")

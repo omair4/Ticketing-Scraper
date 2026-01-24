@@ -7,7 +7,7 @@ Usage:
     python main.py <event_url> --output-dir ./results --format json csv
 
 Examples:
-    python main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/andrew-callaghan/andrew-callaghan/681d11117d3a4df5fd2d2c24"
+    python3.13 main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/andrew-callaghan/andrew-callaghan/681d11117d3a4df5fd2d2c24"
     python main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/artist/byun-jin-sub-wish-list/694ee2570472d0f8bde99b4e"
 """
 
@@ -154,19 +154,20 @@ Examples:
         # Print summary
         print_summary(result)
         
-        # Export results
-        if result.seats:
+        # Export results if we have any data (seats, ticket categories, or resale listings)
+        has_data = result.seats or result.ticket_categories or result.resale_listings
+        if has_data:
             exported = export_results(result, args.output_dir, args.format)
             print("\nExported files:")
             for fmt, filepath in exported.items():
                 print(f"  {fmt.upper()}: {filepath}")
         else:
-            print("\nNo seats found to export.")
+            print("\nNo data found to export.")
             if result.errors:
                 print("Check errors above for details.")
         
         # Return exit code based on success
-        return 0 if result.seats else 1
+        return 0 if has_data else 1
         
     except KeyboardInterrupt:
         print("\nScraping cancelled by user.")

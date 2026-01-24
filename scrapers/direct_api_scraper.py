@@ -22,7 +22,7 @@ import structlog
 import httpx
 
 from scrapers.base import BaseScraper
-from models import ScrapeResult, Seat, EventInfo, SeatStatus, PriceBand
+from models import ScrapeResult, Seat, EventInfo, SeatStatus, PriceBand, TicketCategory, ResaleListing
 from browser import CapturedResponse
 from utils.decoder import extract_event_id_from_url
 
@@ -60,10 +60,24 @@ class DirectAPIScraper(BaseScraper):
         # Step 4: Get seat availability
         seats = await self._extract_seats(captured_responses, price_bands, ticket_prices, service_fees)
         
+        # Step 5: If no seats found, try general admission tickets
+        ticket_categories = []
         if not seats:
-            self.add_error("No seats extracted from availability API")
+            ticket_categories = await self._extract_general_admission_tickets(event_data, ticket_prices, service_fees)
+            if ticket_categories:
+                logger.info("extracted_general_admission_tickets", count=len(ticket_categories))
+            else:
+                self.add_warning("No seats or general admission tickets found")
         
-        return self.create_result(event_info, seats)
+        # Step 6: Extract resale listings (optional)
+        resale_listings = []
+        event_id = event_info.event_id
+        if event_id and event_id != "unknown":
+            resale_listings = await self._extract_resale_listings(captured_responses, event_id)
+            if resale_listings:
+                logger.info("extracted_resale_listings", count=len(resale_listings))
+        
+        return self.create_result(event_info, seats, ticket_categories, resale_listings)
     
     async def _extract_event_data(self, responses: list[CapturedResponse]) -> tuple[dict, Dict[int, PriceBand]]:
         """
@@ -655,3 +669,213 @@ class DirectAPIScraper(BaseScraper):
                         ))
         
         return seats
+    
+    async def _extract_general_admission_tickets(self, event_data: dict,
+                                                 ticket_prices: Dict[int, Decimal],
+                                                 service_fees: Dict[int, Decimal] = None) -> list[TicketCategory]:
+        """
+        Extract general admission tickets from props.tickets array.
+        
+        This handles events with no individual seats, just ticket categories.
+        
+        Structure:
+        - props.tickets[] - array of ticket groups
+        - Each group has items[] array
+        - Each item has:
+          - id: item ID
+          - name: ticket category name (e.g., "General Admission")
+          - type_slug: "ticket" (skip "product" items)
+          - current_stock: available quantity
+          - is_out_of_stock: boolean
+          - pricing[]: price info (in cents)
+        """
+        categories = []
+        
+        if not event_data:
+            return categories
+        
+        props = event_data.get('props', {})
+        tickets_data = props.get('tickets', [])
+        
+        if not tickets_data or not isinstance(tickets_data, list):
+            return categories
+        
+        logger.info("extracting_general_admission_tickets", ticket_groups=len(tickets_data))
+        
+        for ticket_group in tickets_data:
+            if not isinstance(ticket_group, dict):
+                continue
+            
+            group_info = ticket_group.get('group', {})
+            group_name = group_info.get('name', '') if isinstance(group_info, dict) else ''
+            
+            items = ticket_group.get('items', [])
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                
+                # Skip non-ticket items (like refund protection)
+                type_slug = item.get('type_slug', '')
+                if type_slug != 'ticket':
+                    continue
+                
+                # Get ticket category name
+                ticket_name = item.get('name', '')
+                if not ticket_name:
+                    continue
+                
+                # Get stock status
+                current_stock = item.get('current_stock')
+                is_out_of_stock = item.get('is_out_of_stock', False)
+                
+                # Get pricing (in cents)
+                pricing = item.get('pricing', [])
+                price = Decimal('0')
+                service_fee = None
+                
+                if pricing and isinstance(pricing, list) and len(pricing) > 0:
+                    price_info = pricing[0]
+                    if isinstance(price_info, dict):
+                        # Convert from cents to dollars
+                        base_price_cents = price_info.get('base_price', 0)
+                        if base_price_cents:
+                            price = Decimal(str(base_price_cents)) / Decimal('100')
+                        
+                        customer_fees_cents = price_info.get('customer_fees', 0)
+                        if customer_fees_cents:
+                            service_fee = Decimal(str(customer_fees_cents)) / Decimal('100')
+                
+                # Create ticket category object
+                category = TicketCategory(
+                    category_name=ticket_name,
+                    category_id=str(item.get('id', '')),
+                    price=price,
+                    service_fee=service_fee,
+                    current_stock=current_stock,
+                    is_out_of_stock=is_out_of_stock,
+                    group_name=group_name if group_name else None
+                )
+                
+                categories.append(category)
+                logger.debug("extracted_general_admission_ticket",
+                           name=ticket_name,
+                           price=float(price),
+                           stock=current_stock,
+                           is_available=category.is_available)
+        
+        return categories
+    
+    async def _extract_resale_listings(self, responses: list[CapturedResponse],
+                                      event_id: str) -> list[ResaleListing]:
+        """
+        Extract resale listings from the resale-listings endpoint.
+        
+        URL: https://tickets.admitone.com/ajax/events/{event_id}/resale-listings
+        
+        Structure:
+        - listings[] array
+        - Each listing has:
+          - resale_listing_id: unique ID
+          - contracts[]: array of tickets
+          - pricing: price info (in cents)
+        """
+        listings = []
+        
+        # Try to find resale listings in captured responses
+        resale_response = None
+        for response in responses:
+            if 'resale-listings' in response.url and response.body:
+                resale_response = response
+                break
+        
+        # If not found in captured responses, try to fetch it
+        if not resale_response:
+            try:
+                resale_url = f"https://tickets.admitone.com/ajax/events/{event_id}/resale-listings"
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.get(resale_url, headers={
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                        'Accept': 'application/json'
+                    })
+                    if response.status_code == 200:
+                        resale_response = type('obj', (object,), {
+                            'body': response.text,
+                            'url': resale_url
+                        })()
+            except Exception as e:
+                logger.debug("resale_listings_fetch_failed", event_id=event_id, error=str(e))
+                return listings
+        
+        if not resale_response or not resale_response.body:
+            return listings
+        
+        try:
+            data = json.loads(resale_response.body)
+            listings_data = data.get('listings', [])
+            
+            if not listings_data:
+                return listings
+            
+            logger.info("extracting_resale_listings", count=len(listings_data))
+            
+            for listing in listings_data:
+                if not isinstance(listing, dict):
+                    continue
+                
+                resale_listing_id = listing.get('resale_listing_id')
+                contracts = listing.get('contracts', [])
+                pricing = listing.get('pricing', {})
+                
+                if not contracts or not isinstance(contracts, list):
+                    continue
+                
+                # Get ticket category name from first contract
+                ticket_category = 'General Admission'
+                if contracts and isinstance(contracts[0], dict):
+                    sale_item = contracts[0].get('sale_item', {})
+                    if sale_item:
+                        ticket_category = sale_item.get('name', 'General Admission')
+                
+                # Get pricing info (in cents)
+                base_price_cents = pricing.get('base_price', 0)
+                total_price_cents = pricing.get('total_price', 0)
+                customer_fees_cents = pricing.get('customer_fees', 0)
+                average_price_cents = pricing.get('average_price_per_ticket', 0)
+                
+                # Calculate price per ticket
+                if average_price_cents:
+                    price_per_ticket = Decimal(str(average_price_cents)) / Decimal('100')
+                elif base_price_cents:
+                    price_per_ticket = Decimal(str(base_price_cents)) / Decimal('100')
+                else:
+                    # Fallback: divide total by number of contracts
+                    if len(contracts) > 0 and total_price_cents:
+                        price_per_ticket = Decimal(str(total_price_cents)) / Decimal(str(len(contracts))) / Decimal('100')
+                    else:
+                        price_per_ticket = Decimal('0')
+                
+                # Calculate service fee per ticket
+                service_fee_per_ticket = None
+                if customer_fees_cents and len(contracts) > 0:
+                    service_fee_per_ticket = Decimal(str(customer_fees_cents)) / Decimal(str(len(contracts))) / Decimal('100')
+                
+                # Create resale listing object (one per listing, not per ticket)
+                resale_listing = ResaleListing(
+                    listing_id=str(resale_listing_id) if resale_listing_id else '',
+                    ticket_category=ticket_category,
+                    quantity=len(contracts),
+                    price_per_ticket=price_per_ticket,
+                    service_fee_per_ticket=service_fee_per_ticket
+                )
+                
+                listings.append(resale_listing)
+                logger.debug("extracted_resale_listing",
+                           listing_id=resale_listing_id,
+                           ticket_category=ticket_category,
+                           quantity=len(contracts),
+                           price=float(price_per_ticket))
+        
+        except Exception as e:
+            logger.warning("resale_listings_parse_failed", error=str(e))
+        
+        return listings

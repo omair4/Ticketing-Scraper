@@ -86,12 +86,16 @@ class BaseScraper(ABC):
         """Find all responses matching a URL pattern"""
         return [r for r in responses if pattern in r.url and r.body]
     
-    def create_result(self, event_info: EventInfo, seats: list[Seat]) -> ScrapeResult:
+    def create_result(self, event_info: EventInfo, seats: list[Seat] = None,
+                     ticket_categories: list = None, resale_listings: list = None) -> ScrapeResult:
         """Create a ScrapeResult from extracted data"""
+        from models import TicketCategory, ResaleListing
         return ScrapeResult(
             event=event_info,
             scenario_type=self.get_scenario_name(),
-            seats=seats,
+            seats=seats or [],
+            ticket_categories=ticket_categories or [],
+            resale_listings=resale_listings or [],
             errors=self.errors,
             warnings=self.warnings
         )
