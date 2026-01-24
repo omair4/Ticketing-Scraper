@@ -50,7 +50,7 @@ class SeatsIOScraper(BaseScraper):
             self.add_warning("Could not extract pricing data - prices may be missing")
         
         # Step 2: Get event info
-        event_info = await self._extract_event_info(captured_responses, event_url)
+        event_info = await self._extract_event_info(captured_responses, event_url, page_html)
         
         # Step 3: Get seat availability from seats.io
         seats = await self._extract_seats(captured_responses, price_levels)
@@ -109,7 +109,7 @@ class SeatsIOScraper(BaseScraper):
         return price_levels
     
     async def _extract_event_info(self, responses: list[CapturedResponse], 
-                                  event_url: str) -> EventInfo:
+                                  event_url: str, page_html: str = "") -> EventInfo:
         """Extract event metadata"""
         
         event_name = "Unknown Event"
@@ -118,18 +118,35 @@ class SeatsIOScraper(BaseScraper):
         event_date = None
         event_id = extract_event_id_from_url(event_url) or "unknown"
         
-        # Try to get from AdmitONE API
+        # Priority 1: Extract from HTML (most reliable, always available)
+        if page_html:
+            html_info = self._extract_event_info_from_html(page_html)
+            if html_info:
+                if html_info.get('event_name'):
+                    event_name = html_info['event_name']
+                if html_info.get('venue_name'):
+                    venue_name = html_info['venue_name']
+                if html_info.get('venue_address'):
+                    venue_address = html_info['venue_address']
+                if html_info.get('event_date'):
+                    event_date = html_info['event_date']
+        
+        # Priority 2: Try to get from AdmitONE API (may override HTML with more structured data)
         admitone_response = self.find_response_by_pattern(responses, 'embed.admitonelive.com')
         
         if admitone_response and admitone_response.body:
             try:
                 data = json.loads(admitone_response.body)
-                event_name = data.get('event', event_name)
+                # Only override if we don't have values from HTML
+                if event_name == "Unknown Event":
+                    event_name = data.get('event', event_name)
                 
                 venue = data.get('venue', {})
                 if venue:
-                    venue_name = venue.get('venue_name', venue_name)
-                    venue_address = f"{venue.get('address', '')}, {venue.get('city', '')} {venue.get('state', '')} {venue.get('zip', '')}"
+                    if venue_name == "Unknown Venue":
+                        venue_name = venue.get('venue_name', venue_name)
+                    if not venue_address:
+                        venue_address = f"{venue.get('address', '')}, {venue.get('city', '')} {venue.get('state', '')} {venue.get('zip', '')}".strip(', ')
                 
                 event_id = str(data.get('event_id', event_id))
             except:

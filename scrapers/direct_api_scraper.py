@@ -55,7 +55,7 @@ class DirectAPIScraper(BaseScraper):
             self.add_warning("Could not extract pricing data - prices may be missing")
         
         # Step 3: Get event info
-        event_info = await self._extract_event_info(event_data, captured_responses, event_url)
+        event_info = await self._extract_event_info(event_data, captured_responses, event_url, page_html)
         
         # Step 4: Get seat availability
         seats = await self._extract_seats(captured_responses, price_bands, ticket_prices, service_fees)
@@ -259,7 +259,7 @@ class DirectAPIScraper(BaseScraper):
     
     async def _extract_event_info(self, event_data: dict, 
                                   responses: list[CapturedResponse],
-                                  event_url: str) -> EventInfo:
+                                  event_url: str, page_html: str = "") -> EventInfo:
         """Extract event metadata"""
         
         event_name = "Unknown Event"
@@ -268,7 +268,20 @@ class DirectAPIScraper(BaseScraper):
         event_date = None
         event_id = extract_event_id_from_url(event_url) or "unknown"
         
-        # Try to extract from event data
+        # Priority 1: Extract from HTML (most reliable, always available)
+        if page_html:
+            html_info = self._extract_event_info_from_html(page_html)
+            if html_info:
+                if html_info.get('event_name'):
+                    event_name = html_info['event_name']
+                if html_info.get('venue_name'):
+                    venue_name = html_info['venue_name']
+                if html_info.get('venue_address'):
+                    venue_address = html_info['venue_address']
+                if html_info.get('event_date'):
+                    event_date = html_info['event_date']
+        
+        # Priority 2: Try to extract from event data (may override HTML with more structured data)
         if event_data:
             # Event name might be in seating_plan.name or elsewhere
             sp = event_data.get('seating_plan', {})
@@ -300,6 +313,14 @@ class DirectAPIScraper(BaseScraper):
                 event_id = match.group(1)
                 break
         
+        # Priority 3: Fallback - Extract from URL if still unknown
+        if event_name == "Unknown Event" or venue_name == "Unknown Venue":
+            url_venue, url_event = self._extract_names_from_url(event_url)
+            if venue_name == "Unknown Venue" and url_venue:
+                venue_name = url_venue
+            if event_name == "Unknown Event" and url_event:
+                event_name = url_event
+        
         return EventInfo(
             event_id=event_id,
             event_name=event_name,
@@ -308,6 +329,77 @@ class DirectAPIScraper(BaseScraper):
             event_date=event_date,
             event_url=event_url
         )
+    
+    def _extract_names_from_url(self, url: str) -> tuple[Optional[str], Optional[str]]:
+        """
+        Extract venue and event names from AdmitONE URL.
+        
+        URL pattern: /events/{location}/{category}/{subcategory}/{venue}/{event}/{event}/{id}
+        Example: /events/toronto/pro/other/queen-elizabeth-theatre/tom-papa/tom-papa/6915118b6b0dede5013c05fe
+        
+        Strategy:
+        - Find the segment that appears twice (the event name)
+        - The segment before it is the venue
+        - Convert kebab-case to Title Case
+        
+        Returns:
+            Tuple of (venue_name, event_name) or (None, None) if not found
+        """
+        try:
+            from urllib.parse import urlparse
+            
+            parsed = urlparse(url)
+            path_parts = [p for p in parsed.path.split('/') if p]
+            
+            # Look for /events/ in the path
+            if 'events' not in path_parts:
+                return None, None
+            
+            events_index = path_parts.index('events')
+            
+            # Need at least 4 parts after /events/: location, category/subcategory, venue, event
+            if len(path_parts) < events_index + 4:
+                return None, None
+            
+            # Get segments after /events/ (excluding the last one which is usually an ID)
+            relevant_parts = path_parts[events_index + 1:-1] if len(path_parts) > events_index + 1 else path_parts[events_index + 1:]
+            
+            if len(relevant_parts) < 2:
+                return None, None
+            
+            # Find the first segment that appears more than once (likely the event name)
+            segment_counts = {}
+            for segment in relevant_parts:
+                segment_counts[segment] = segment_counts.get(segment, 0) + 1
+            
+            # Find the first duplicate segment (event name)
+            event_segment = None
+            event_index = None
+            for i, segment in enumerate(relevant_parts):
+                if segment_counts.get(segment, 0) >= 2:
+                    event_segment = segment
+                    event_index = i
+                    break
+            
+            if event_segment is None or event_index is None or event_index == 0:
+                return None, None
+            
+            # The venue is the segment just before the event
+            venue_segment = relevant_parts[event_index - 1]
+            
+            # Convert kebab-case to Title Case
+            def to_title_case(text: str) -> str:
+                return ' '.join(word.capitalize() for word in text.split('-'))
+            
+            venue_name = to_title_case(venue_segment)
+            event_name = to_title_case(event_segment)
+            
+            logger.debug("extracted_names_from_url", venue=venue_name, event_name=event_name)
+            return venue_name, event_name
+            
+        except Exception as e:
+            logger.debug("url_parsing_failed", url=url, error=str(e))
+            return None, None
     
     async def _extract_seats(self, responses: list[CapturedResponse],
                             price_bands: Dict[int, PriceBand],

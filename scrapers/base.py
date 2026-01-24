@@ -3,8 +3,9 @@ Base scraper class defining the interface for all scrapers
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, Dict
 import structlog
+from bs4 import BeautifulSoup
 
 from models import ScrapeResult, Seat, EventInfo, SeatStatus
 from browser import CapturedResponse
@@ -135,3 +136,98 @@ class BaseScraper(ABC):
             return SeatStatus.RESERVED
         else:
             return SeatStatus.UNKNOWN
+    
+    def _extract_event_info_from_html(self, page_html: str) -> Optional[Dict[str, Optional[str]]]:
+        """
+        Extract event information from the main event page HTML.
+        
+        Extracts:
+        - Event name: <h1> text content
+        - Event subtitle: First <p> after <h1> (if exists)
+        - Date: Text after "Date" label in Event Details section
+        - Time: Text after "Time" label in Event Details section
+        - Venue: Text after "Venue" label in Event Details section
+        - Address: Text after "Address" label in Event Details section
+        
+        Returns:
+            Dict with keys: event_name, event_date, event_time, venue_name, venue_address
+            Or None if parsing fails
+        """
+        try:
+            soup = BeautifulSoup(page_html, 'html.parser')
+            
+            result = {
+                'event_name': None,
+                'event_date': None,
+                'event_time': None,
+                'venue_name': None,
+                'venue_address': None
+            }
+            
+            # Extract event name from <h1>
+            h1 = soup.find('h1')
+            if h1:
+                event_name = h1.get_text(strip=True)
+                result['event_name'] = event_name
+                
+                # Check for subtitle (first <p> after <h1>, may not be immediate sibling)
+                # Look for the next <p> element after h1
+                next_p = h1.find_next('p')
+                if next_p:
+                    subtitle = next_p.get_text(strip=True)
+                    # Only use as subtitle if it's not empty and not too long (likely not a description)
+                    if subtitle and len(subtitle) < 200:  # Subtitle should be relatively short
+                        # Combine event name and subtitle
+                        result['event_name'] = f"{event_name} - {subtitle}"
+            
+            # Find "Event Details" section
+            event_details_heading = soup.find('h3', string=lambda text: text and 'Event Details' in text)
+            if not event_details_heading:
+                # Try case-insensitive search
+                for h3 in soup.find_all('h3'):
+                    if h3.get_text(strip=True).lower() == 'event details':
+                        event_details_heading = h3
+                        break
+            
+            if event_details_heading:
+                # Get the container after the heading
+                details_container = event_details_heading.find_next_sibling()
+                if details_container:
+                    # Find all paragraphs in the container
+                    paragraphs = details_container.find_all('p')
+                    
+                    # Match labels to values
+                    for i, p in enumerate(paragraphs):
+                        text = p.get_text(strip=True)
+                        
+                        # Check if this is a label
+                        if text == 'Date' and i + 1 < len(paragraphs):
+                            date_p = paragraphs[i + 1]
+                            result['event_date'] = date_p.get_text(strip=True)
+                        
+                        elif text == 'Time' and i + 1 < len(paragraphs):
+                            time_p = paragraphs[i + 1]
+                            result['event_time'] = time_p.get_text(strip=True)
+                        
+                        elif text == 'Venue' and i + 1 < len(paragraphs):
+                            venue_p = paragraphs[i + 1]
+                            result['venue_name'] = venue_p.get_text(strip=True)
+                        
+                        elif text == 'Address' and i + 1 < len(paragraphs):
+                            address_p = paragraphs[i + 1]
+                            result['venue_address'] = address_p.get_text(strip=True)
+            
+            # Only return if we extracted at least the event name
+            if result['event_name']:
+                logger.debug("extracted_event_info_from_html", 
+                           event_name=result['event_name'],
+                           has_date=result['event_date'] is not None,
+                           has_venue=result['venue_name'] is not None)
+                return result
+            else:
+                logger.debug("html_parsing_failed_no_event_name")
+                return None
+                
+        except Exception as e:
+            logger.warning("html_parsing_failed", error=str(e))
+            return None
