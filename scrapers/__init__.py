@@ -5,11 +5,13 @@ Scraper implementations for different API scenarios
 from .base import BaseScraper
 from .seatsio_scraper import SeatsIOScraper
 from .direct_api_scraper import DirectAPIScraper
+from .graphql_scraper import GraphQLScraper
 
 __all__ = [
     'BaseScraper',
     'SeatsIOScraper', 
-    'DirectAPIScraper'
+    'DirectAPIScraper',
+    'GraphQLScraper'
 ]
 
 
@@ -18,7 +20,7 @@ def get_scraper_for_scenario(scenario: str) -> BaseScraper:
     Factory function to get appropriate scraper for detected scenario.
     
     Args:
-        scenario: One of 'seatsio', 'direct_api', or 'unknown'
+        scenario: One of 'seatsio', 'direct_api', 'graphql', or 'unknown'
     
     Returns:
         Appropriate scraper instance
@@ -26,6 +28,7 @@ def get_scraper_for_scenario(scenario: str) -> BaseScraper:
     scrapers = {
         'seatsio': SeatsIOScraper,
         'direct_api': DirectAPIScraper,
+        'graphql': GraphQLScraper,
     }
     
     scraper_class = scrapers.get(scenario)

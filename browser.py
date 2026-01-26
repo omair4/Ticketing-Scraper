@@ -108,6 +108,8 @@ class BrowserAutomation:
             'seatsio.net',
             'embed.admitonelive.com',
             'tickets.admitone.com',
+            'graphql.admitone.com',
+            'checkout.admitone.com',
             '/api/',
             'object-statuses',
             'seating-plan',
@@ -128,6 +130,7 @@ class BrowserAutomation:
                     'seating-plan/availability',
                     'charts/published',
                     'tickets.admitone.com/events/',  # Direct API endpoints
+                    'graphql.admitone.com',  # GraphQL API
                 ])
                 
                 # Try to get response body
@@ -165,9 +168,10 @@ class BrowserAutomation:
         """
         Navigate through the ticket purchase flow to reach the seating selection.
         
-        This handles both scenarios:
+        This handles all scenarios:
         1. Direct: Buy Now → Seating plan loads
         2. Two-step: Buy Now → Modal → Select Seats → Seating plan loads
+        3. GraphQL: Get Tickets → Opens checkout.admitone.com in new tab → GraphQL request
         
         Returns:
             NavigationResult with captured API responses
@@ -197,17 +201,95 @@ class BrowserAutomation:
             
             # Step 2: Click first "Buy Now" or "Get Tickets" button
             logger.info("attempting_to_click_buy_button")
+            
+            # Set up listener for new pages (for GraphQL scenario)
+            new_page_promise = asyncio.create_task(self._wait_for_new_page())
+            
             clicked = await self._click_buy_button()
+            
             if not clicked:
+                new_page_promise.cancel()
                 return NavigationResult(
                     success=False,
                     current_url=self.page.url,
                     error="Could not find Buy Now button"
                 )
             
-            # Wait for modal/iframe to appear or redirect
+            # Wait for modal/iframe to appear, redirect, or new tab
             logger.info("waiting_for_modal_or_redirect")
             await asyncio.sleep(self.config.click_delay / 1000)  # Wait after clicking Buy Now
+            
+            # Check if a new page/tab was opened (GraphQL scenario)
+            try:
+                new_page = await asyncio.wait_for(new_page_promise, timeout=5.0)
+                
+                if new_page:
+                    logger.info("new_page_opened", scenario="graphql_checkout_flow", url=new_page.url)
+                    # Switch to the new page
+                    self.page = new_page
+                    # Set up response capture on new page
+                    self.page.on('response', self._on_response)
+                    
+                    # Wait for checkout page to load
+                    await self.page.wait_for_load_state('domcontentloaded', timeout=15000)
+                    await asyncio.sleep(2)
+                    
+                    # Wait for GraphQL request to complete
+                    try:
+                        await self.page.wait_for_load_state('networkidle', timeout=20000)
+                    except:
+                        logger.debug("networkidle_timeout_on_checkout", msg="Continuing anyway")
+                    
+                    # Give additional time for GraphQL API calls
+                    await asyncio.sleep(3)
+                    
+                    # Detect scenario
+                    scenario = self._detect_scenario()
+                    html = await self.page.content()
+                    
+                    return NavigationResult(
+                        success=True,
+                        current_url=self.page.url,
+                        captured_responses=self.captured_responses.copy(),
+                        page_html=html,
+                        scenario_detected=scenario
+                    )
+            except asyncio.TimeoutError:
+                # No new page opened, check if we navigated to checkout.admitone.com in same page
+                current_url = self.page.url
+                
+                if 'checkout.admitone.com' in current_url:
+                    logger.info("navigated_to_checkout", scenario="graphql_checkout_flow", url=current_url)
+                    
+                    # Wait for checkout page to load
+                    await self.page.wait_for_load_state('domcontentloaded', timeout=15000)
+                    await asyncio.sleep(2)
+                    
+                    # Wait for GraphQL request to complete
+                    try:
+                        await self.page.wait_for_load_state('networkidle', timeout=20000)
+                    except:
+                        logger.debug("networkidle_timeout_on_checkout", msg="Continuing anyway")
+                    
+                    # Give additional time for GraphQL API calls
+                    await asyncio.sleep(3)
+                    
+                    # Detect scenario
+                    scenario = self._detect_scenario()
+                    html = await self.page.content()
+                    
+                    return NavigationResult(
+                        success=True,
+                        current_url=self.page.url,
+                        captured_responses=self.captured_responses.copy(),
+                        page_html=html,
+                        scenario_detected=scenario
+                    )
+                else:
+                    # No new page opened, continue with existing flow
+                    logger.debug("no_new_page_opened", msg="Continuing with existing flow")
+            except Exception as e:
+                logger.debug("new_page_check_failed", error=str(e), msg="Continuing with existing flow")
             
             # Check for modal dialog with second Buy Now button (Scenario 2: direct API)
             modal_buy_now_clicked = await self._click_modal_buy_now_button()
@@ -628,24 +710,55 @@ class BrowserAutomation:
         
         return False
     
+    async def _wait_for_new_page(self) -> Optional[Page]:
+        """
+        Wait for a new page/tab to be opened.
+        
+        Returns:
+            Page object of the new page, or None if timeout
+        """
+        try:
+            # Wait for new page event
+            new_page = await self.context.wait_for_event('page', timeout=5000)
+            return new_page
+        except Exception as e:
+            logger.debug("no_new_page_event", error=str(e))
+            return None
+    
     def _detect_scenario(self) -> str:
         """
         Detect which API scenario we're dealing with based on captured responses.
         
         Returns:
-            'seatsio' or 'direct_api'
+            'seatsio', 'direct_api', or 'graphql'
         """
-        # First check for seatsio indicators
+        # Priority 1: Check for seatsio indicators (most specific to ticket selection flow)
         for response in self.captured_responses:
             if 'seatsio.net' in response.url or 'embed.admitonelive.com' in response.url:
                 return 'seatsio'
         
-        # Check for direct API indicators (tickets.admitone.com)
+        # Priority 2: Check for direct API indicators (tickets.admitone.com)
         for response in self.captured_responses:
             if 'tickets.admitone.com' in response.url:
                 # Check for specific endpoints
                 if 'seating-plan/availability' in response.url or '/events/' in response.url:
                     return 'direct_api'
+        
+        # Priority 3: Check for GraphQL scenario
+        # Only detect as GraphQL if we're on checkout.admitone.com (strong indicator)
+        # OR if we have GraphQL responses AND no other ticket selection indicators
+        if self.page and 'checkout.admitone.com' in self.page.url:
+            return 'graphql'
+        
+        # Check for GraphQL responses only if we're not in a seats.io or direct_api flow
+        has_graphql = any('graphql.admitone.com' in r.url for r in self.captured_responses)
+        if has_graphql:
+            # Only return graphql if we don't have seats.io or direct_api indicators
+            # This prevents false positives when GraphQL is used for other purposes
+            has_seatsio = any('seatsio.net' in r.url or 'embed.admitonelive.com' in r.url for r in self.captured_responses)
+            has_direct_api = any('tickets.admitone.com' in r.url and ('seating-plan/availability' in r.url or '/events/' in r.url) for r in self.captured_responses)
+            if not has_seatsio and not has_direct_api:
+                return 'graphql'
         
         return 'unknown'
     

@@ -180,4 +180,5 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 /output
+/ouputtemp
 links.txt
