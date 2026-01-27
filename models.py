@@ -30,6 +30,7 @@ class Seat(BaseModel):
     # Optional additional info
     price_level: Optional[str] = Field(default=None, description="Price level/tier name")
     price_level_id: Optional[str] = Field(default=None, description="Internal price level ID")
+    restricted_view: Optional[bool] = Field(default=None, description="Whether the seat has restricted view (true/false, only included if present in API)")
     
     @computed_field
     @property
@@ -61,6 +62,15 @@ class Seat(BaseModel):
             if cleaned:
                 return Decimal(cleaned)
         return Decimal('0')
+    
+    @field_validator('restricted_view', mode='before')
+    @classmethod
+    def parse_restricted_view(cls, v):
+        """Ensure restricted_view is a proper boolean when not None"""
+        if v is None:
+            return None
+        # Convert to proper boolean (handle int 0/1, float 0.0/1.0, bool)
+        return bool(int(float(v)))
     
     def to_display_string(self) -> str:
         """Human-readable seat identifier"""

@@ -556,6 +556,20 @@ class DirectAPIScraper(BaseScraper):
             if not level_name:
                 level_name = embedded_band.get('name', '')
         
+        # Extract restricted_view field (0/0.0 → False, 1/1.0 → True, None if not present)
+        # Check for both "restricted" (schema format: 0/1) and "is_restricted" (availability API format: boolean)
+        restricted_view = None
+        if 'restricted' in seat_data:
+            restricted_value = seat_data.get('restricted')
+            if restricted_value is not None:
+                # Convert to proper boolean (handle int 0/1, float 0.0/1.0, bool)
+                restricted_view = bool(int(float(restricted_value)))
+        elif 'is_restricted' in seat_data:
+            # Availability API uses is_restricted (boolean)
+            restricted_value = seat_data.get('is_restricted')
+            if restricted_value is not None:
+                # Ensure it's a proper boolean
+                restricted_view = bool(int(float(restricted_value)))
         return Seat(
             section=self.normalize_section_name(section),
             row=row,
@@ -564,7 +578,8 @@ class DirectAPIScraper(BaseScraper):
             service_fee=service_fee,
             status=status,
             price_level=level_name,
-            price_level_id=str(price_band_id) if price_band_id else None
+            price_level_id=str(price_band_id) if price_band_id else None,
+            restricted_view=restricted_view
         )
     
     async def _extract_seats_from_schema(self, responses: list[CapturedResponse],
@@ -593,7 +608,7 @@ class DirectAPIScraper(BaseScraper):
                         schema = sp.get('schema')
                     
                     if schema:
-                        seats = self._parse_schema_seats(schema, price_bands, ticket_prices)
+                        seats = self._parse_schema_seats(schema, price_bands, ticket_prices, service_fees)
                         if seats:
                             break
                 except:
@@ -602,7 +617,7 @@ class DirectAPIScraper(BaseScraper):
         return seats
     
     def _parse_schema_seats(self, schema: dict, price_bands: Dict[int, PriceBand],
-                           ticket_prices: Dict[int, Decimal]) -> list[Seat]:
+                           ticket_prices: Dict[int, Decimal], service_fees: Dict[int, Decimal] = None) -> list[Seat]:
         """Parse seats from the seating plan schema"""
         seats = []
         
@@ -656,6 +671,20 @@ class DirectAPIScraper(BaseScraper):
                     if service_fees and price_band_id and price_band_id in service_fees:
                         fee = service_fees[price_band_id]
                     
+                    # Extract restricted_view field (0/0.0 → False, 1/1.0 → True, None if not present)
+                    # Check for both "restricted" (schema format: 0/1) and "is_restricted" (if present)
+                    restricted_view = None
+                    if 'restricted' in col:
+                        restricted_value = col.get('restricted')
+                        if restricted_value is not None:
+                            # Convert to proper boolean (handle int 0/1, float 0.0/1.0, bool)
+                            restricted_view = bool(int(float(restricted_value)))
+                    elif 'is_restricted' in col:
+                        # Some schemas might use is_restricted
+                        restricted_value = col.get('is_restricted')
+                        if restricted_value is not None:
+                            # Ensure it's a proper boolean
+                            restricted_view = bool(int(float(restricted_value)))
                     if block_label and row_label:
                         seats.append(Seat(
                             section=self.normalize_section_name(block_label),
@@ -665,7 +694,8 @@ class DirectAPIScraper(BaseScraper):
                             service_fee=fee,
                             status=SeatStatus.AVAILABLE,  # Schema doesn't have status
                             price_level=level_name,
-                            price_level_id=str(price_band_id) if price_band_id else None
+                            price_level_id=str(price_band_id) if price_band_id else None,
+                            restricted_view=restricted_view
                         ))
         
         return seats

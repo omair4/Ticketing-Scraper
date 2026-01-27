@@ -47,17 +47,23 @@ def export_to_json(result: ScrapeResult, output_dir: str = "./output") -> str:
     # Convert to dict with proper serialization
     data = result.model_dump(mode='json')
     
-    # Convert Decimal to float for JSON serialization
-    def convert_decimals(obj):
+    # Convert Decimal to float for JSON serialization and remove None values
+    def convert_decimals_and_remove_none(obj):
         if isinstance(obj, dict):
-            return {k: convert_decimals(v) for k, v in obj.items()}
+            # Remove None values and recursively process remaining values
+            return {k: convert_decimals_and_remove_none(v) 
+                   for k, v in obj.items() if v is not None}
         elif isinstance(obj, list):
-            return [convert_decimals(item) for item in obj]
+            return [convert_decimals_and_remove_none(item) for item in obj]
+        elif isinstance(obj, bool):
+            # Preserve booleans as-is (don't convert to float)
+            return obj
         elif hasattr(obj, '__float__'):
+            # Convert Decimal and other numeric types to float
             return float(obj)
         return obj
     
-    data = convert_decimals(data)
+    data = convert_decimals_and_remove_none(data)
     
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False, default=str)
