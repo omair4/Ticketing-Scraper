@@ -51,9 +51,6 @@ class DirectAPIScraper(BaseScraper):
         # Step 2: Get ticket types with actual prices and fees
         ticket_prices, service_fees = await self._extract_ticket_prices_and_fees(captured_responses, event_data)
         
-        if not ticket_prices and not price_bands:
-            self.add_warning("Could not extract pricing data - prices may be missing")
-        
         # Step 3: Get event info
         event_info = await self._extract_event_info(event_data, captured_responses, event_url, page_html)
         
@@ -66,8 +63,15 @@ class DirectAPIScraper(BaseScraper):
             ticket_categories = await self._extract_general_admission_tickets(event_data, ticket_prices, service_fees)
             if ticket_categories:
                 logger.info("extracted_general_admission_tickets", count=len(ticket_categories))
-            else:
-                self.add_warning("No seats or general admission tickets found")
+        
+        # Only warn about missing pricing if we have seats but no pricing for them
+        # For general admission events, pricing is in ticket_categories, so no warning needed
+        if seats and not ticket_prices and not price_bands:
+            self.add_warning("Could not extract pricing data for seats - prices may be missing")
+        
+        # Warn if we found neither seats nor general admission tickets
+        if not seats and not ticket_categories:
+            self.add_warning("No seats or general admission tickets found")
         
         # Step 6: Extract resale listings (optional)
         resale_listings = []

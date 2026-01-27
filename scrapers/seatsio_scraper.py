@@ -303,7 +303,7 @@ class SeatsIOScraper(BaseScraper):
                 logger.debug("uuid_not_found_in_availability", uuid=uuid[:20] if uuid else None)
             
             # Get price by categoryKey
-            price, service_fee, level_name = self._get_price_by_category_key(
+            price, service_fee, level_name, level_id = self._get_price_by_category_key(
                 category_key, category_map, price_levels
             )
             
@@ -315,7 +315,8 @@ class SeatsIOScraper(BaseScraper):
                 price=price,
                 service_fee=service_fee,
                 status=status,
-                price_level=level_name
+                price_level=level_name,
+                price_level_id=level_id
             )
             seats.append(seat)
         
@@ -378,7 +379,7 @@ class SeatsIOScraper(BaseScraper):
     
     def _get_price_by_category_key(self, category_key: Optional[str],
                                   category_map: Dict[str, str],
-                                  price_levels: Dict[str, PriceLevel]) -> tuple[Decimal, Optional[Decimal], str]:
+                                  price_levels: Dict[str, PriceLevel]) -> tuple[Decimal, Optional[Decimal], str, Optional[str]]:
         """
         Get price for a seat by matching categoryKey.
         
@@ -388,12 +389,12 @@ class SeatsIOScraper(BaseScraper):
             price_levels: Price levels from embed API
         
         Returns:
-            Tuple of (price, service_fee, level_name)
+            Tuple of (price, service_fee, level_name, level_id)
         """
         default_price = Decimal('0')
         
         if not category_key:
-            return default_price, None, "Unknown"
+            return default_price, None, "Unknown", None
         
         # Step 1: Get category label from category_map
         category_label = category_map.get(category_key, '')
@@ -401,28 +402,28 @@ class SeatsIOScraper(BaseScraper):
         # Step 2: Try to match by categoryKey directly to level_id
         if category_key in price_levels:
             level = price_levels[category_key]
-            return level.price, level.service_fee, level.level_name
+            return level.price, level.service_fee, level.level_name, level.level_id
         
         # Step 3: Try to match category label to level name
         if category_label and hasattr(self, '_price_by_name'):
             label_lower = category_label.lower().strip()
             if label_lower in self._price_by_name:
                 level = self._price_by_name[label_lower]
-                return level.price, level.service_fee, level.level_name
+                return level.price, level.service_fee, level.level_name, level.level_id
             
             # Partial match
             for name, level in self._price_by_name.items():
                 if label_lower in name or name in label_lower:
-                    return level.price, level.service_fee, level.level_name
+                    return level.price, level.service_fee, level.level_name, level.level_id
         
         # Step 4: Fallback - use first active price level
         if price_levels:
             for level in price_levels.values():
                 if level.active:
                     self.add_warning(f"Using default price for categoryKey {category_key} (label: {category_label})")
-                    return level.price, level.service_fee, level.level_name
+                    return level.price, level.service_fee, level.level_name, level.level_id
         
-        return default_price, None, category_label or "Unknown"
+        return default_price, None, category_label or "Unknown", None
     
     async def _extract_seats_fallback(self, responses: list[CapturedResponse],
                                      price_levels: Dict[str, PriceLevel]) -> list[Seat]:
@@ -533,7 +534,7 @@ class SeatsIOScraper(BaseScraper):
         status = self.parse_seat_status(status_str)
         
         # Get price from category/level
-        price, service_fee, level_name = self._get_price_for_seat(seat_data, price_levels)
+        price, service_fee, level_name, level_id = self._get_price_for_seat(seat_data, price_levels)
         
         return Seat(
             section=self.normalize_section_name(section),
@@ -542,7 +543,8 @@ class SeatsIOScraper(BaseScraper):
             price=price,
             service_fee=service_fee,
             status=status,
-            price_level=level_name
+            price_level=level_name,
+            price_level_id=level_id
         )
     
     def _parse_seat_label(self, label: str, seat_data: dict) -> tuple[str, str, str]:
@@ -614,11 +616,11 @@ class SeatsIOScraper(BaseScraper):
         return section.strip(), row.strip(), seat_num.strip()
     
     def _get_price_for_seat(self, seat_data: dict, 
-                           price_levels: Dict[str, PriceLevel]) -> tuple[Decimal, Optional[Decimal], str]:
+                           price_levels: Dict[str, PriceLevel]) -> tuple[Decimal, Optional[Decimal], str, Optional[str]]:
         """
         Get price for a seat by matching category/level.
         
-        Returns: (price, service_fee, level_name)
+        Returns: (price, service_fee, level_name, level_id)
         """
         default_price = Decimal('0')
         
@@ -629,19 +631,19 @@ class SeatsIOScraper(BaseScraper):
         # Try matching by category key as level_id
         if category_key and str(category_key) in price_levels:
             level = price_levels[str(category_key)]
-            return level.price, level.service_fee, level.level_name
+            return level.price, level.service_fee, level.level_name, level.level_id
         
         # Try matching by category label to level name
         if category_label and hasattr(self, '_price_by_name'):
             label_lower = category_label.lower().strip()
             if label_lower in self._price_by_name:
                 level = self._price_by_name[label_lower]
-                return level.price, level.service_fee, level.level_name
+                return level.price, level.service_fee, level.level_name, level.level_id
             
             # Partial match
             for name, level in self._price_by_name.items():
                 if label_lower in name or name in label_lower:
-                    return level.price, level.service_fee, level.level_name
+                    return level.price, level.service_fee, level.level_name, level.level_id
         
         # Try matching by section name from the label
         label = seat_data.get('objectLabelOrUuid') or seat_data.get('label', '')
@@ -649,13 +651,13 @@ class SeatsIOScraper(BaseScraper):
             label_lower = label.lower()
             for name, level in self._price_by_name.items():
                 if name in label_lower or any(part in label_lower for part in name.split()):
-                    return level.price, level.service_fee, level.level_name
+                    return level.price, level.service_fee, level.level_name, level.level_id
         
         # If we have price levels but couldn't match, use the first active one
         if price_levels:
             for level in price_levels.values():
                 if level.active:
                     self.add_warning(f"Using default price for seat: {label}")
-                    return level.price, level.service_fee, level.level_name
+                    return level.price, level.service_fee, level.level_name, level.level_id
         
-        return default_price, None, "Unknown"
+        return default_price, None, "Unknown", None
