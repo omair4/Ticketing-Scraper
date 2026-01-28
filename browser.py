@@ -364,10 +364,27 @@ class BrowserAutomation:
             # Give additional time for all API calls to complete
             await asyncio.sleep(3)
             
+            # Check for embed widget iframe and capture its HTML if present
+            html = await self.page.content()
+            try:
+                # Look for embed widget iframe
+                iframe_element = await self.page.query_selector('iframe[src*="embed.admitonelive.com/event/"]')
+                if iframe_element:
+                    iframe = await iframe_element.content_frame()
+                    if iframe:
+                        # Wait for iframe to be fully loaded
+                        try:
+                            await iframe.wait_for_load_state('domcontentloaded', timeout=5000)
+                            await asyncio.sleep(2)  # Give time for JavaScript to execute
+                        except:
+                            pass
+                        html = await iframe.content()
+                        logger.info("captured_iframe_html_for_embed_widget", html_length=len(html))
+            except Exception as e:
+                logger.debug("could_not_get_iframe_html", error=str(e), msg="Using main page HTML")
+            
             # Detect which scenario we're in based on captured responses
             scenario = self._detect_scenario()
-            
-            html = await self.page.content()
             
             return NavigationResult(
                 success=True,
@@ -730,34 +747,46 @@ class BrowserAutomation:
         Detect which API scenario we're dealing with based on captured responses.
         
         Returns:
-            'seatsio', 'direct_api', or 'graphql'
+            'seatsio', 'direct_api', 'graphql', 'embed_widget', or 'unknown'
         """
-        # Priority 1: Check for seatsio indicators (most specific to ticket selection flow)
-        for response in self.captured_responses:
-            if 'seatsio.net' in response.url or 'embed.admitonelive.com' in response.url:
-                return 'seatsio'
+        # Priority 1: Check for seatsio indicators FIRST
+        # SeatsIO events also load embed.admitonelive.com/event/ initially,
+        # but then load seats.io APIs, so check for seatsio indicators first
+        has_seatsio_net = any('seatsio.net' in r.url for r in self.captured_responses)
+        has_seatsio_api = any('embed.admitonelive.com/api/events/seated/' in r.url for r in self.captured_responses)
         
-        # Priority 2: Check for direct API indicators (tickets.admitone.com)
+        if has_seatsio_net or has_seatsio_api:
+            return 'seatsio'
+        
+        # Priority 2: Check for embed widget scenario (embed.admitonelive.com/event/)
+        # Only detect as embed_widget if we have the event URL but NO seatsio indicators
+        has_embed_event = any('embed.admitonelive.com/event/' in r.url for r in self.captured_responses)
+        if self.page and 'embed.admitonelive.com/event/' in self.page.url:
+            has_embed_event = True
+        
+        if has_embed_event and not (has_seatsio_net or has_seatsio_api):
+            return 'embed_widget'
+        
+        # Priority 3: Check for direct API indicators (tickets.admitone.com)
         for response in self.captured_responses:
             if 'tickets.admitone.com' in response.url:
                 # Check for specific endpoints
                 if 'seating-plan/availability' in response.url or '/events/' in response.url:
                     return 'direct_api'
         
-        # Priority 3: Check for GraphQL scenario
+        # Priority 4: Check for GraphQL scenario
         # Only detect as GraphQL if we're on checkout.admitone.com (strong indicator)
         # OR if we have GraphQL responses AND no other ticket selection indicators
         if self.page and 'checkout.admitone.com' in self.page.url:
             return 'graphql'
         
-        # Check for GraphQL responses only if we're not in a seats.io or direct_api flow
+        # Check for GraphQL responses only if we don't have other indicators
         has_graphql = any('graphql.admitone.com' in r.url for r in self.captured_responses)
         if has_graphql:
-            # Only return graphql if we don't have seats.io or direct_api indicators
+            # Only return graphql if we don't have seats.io, embed_widget, or direct_api indicators
             # This prevents false positives when GraphQL is used for other purposes
-            has_seatsio = any('seatsio.net' in r.url or 'embed.admitonelive.com' in r.url for r in self.captured_responses)
             has_direct_api = any('tickets.admitone.com' in r.url and ('seating-plan/availability' in r.url or '/events/' in r.url) for r in self.captured_responses)
-            if not has_seatsio and not has_direct_api:
+            if not (has_seatsio_net or has_seatsio_api) and not has_embed_event and not has_direct_api:
                 return 'graphql'
         
         return 'unknown'
