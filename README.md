@@ -1,14 +1,19 @@
 # AdmitONE Ticket Scraper
 
-A Python scraper for extracting seat availability data from AdmitONE event pages. Handles multiple API scenarios including seats.io integrations and direct ticket APIs.
+A Python scraper for extracting ticket and seat availability data from AdmitONE event pages. Automatically handles multiple API scenarios including seats.io integrations, direct ticket APIs, GraphQL endpoints, and embedded widgets.
 
 ## Features
 
-- **Multi-step navigation**: Automatically clicks through "Buy Now" and "Select Seats" flows
-- **Scenario auto-detection**: Identifies whether the event uses seats.io or direct API
-- **Complete data extraction**: Gets section, row, seat number, and price for all seats
+- **Multi-scenario support**: Automatically detects and handles 4 different ticket system types
+- **Smart navigation**: Automatically clicks through "Buy Now" and "Select Seats" flows
+- **Complete data extraction**: Gets section, row, seat number, price, and availability for all tickets
 - **Multiple output formats**: Exports to JSON and CSV
-- **Hex decoding**: Handles obfuscated seats.io API responses
+- **Robust parsing**: Handles hex-encoded responses, JavaScript variables, and complex HTML structures
+
+## Requirements
+
+- **Python**: 3.9, 3.10, 3.11, 3.12, or 3.13 (Python 3.8+ and < 3.14)
+- **Playwright**: Chromium browser (installed automatically)
 
 ## Installation
 
@@ -23,15 +28,20 @@ pip install -r requirements.txt
 playwright install chromium
 ```
 
-## Usage
-
-### Basic Usage
+## Quick Start
 
 ```bash
+# Basic usage - just provide the event URL
 python main.py "https://admitone.com/events/your-event-url"
+
+# Run in headless mode (no browser window)
+python main.py "https://admitone.com/events/your-event-url" --headless
+
+# Custom output directory
+python main.py "https://admitone.com/events/your-event-url" --output-dir ./results
 ```
 
-### Options
+## Command Line Options
 
 ```bash
 python main.py <url> [options]
@@ -43,23 +53,39 @@ Options:
   --debug             Enable debug logging
 ```
 
-### Examples
+## Examples
 
+### Scenario 1: SeatsIO Integration
+Events with interactive seat maps using seats.io:
 ```bash
-# Scenario 1: seats.io event (Andrew Callaghan)
 python main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/andrew-callaghan/andrew-callaghan/681d11117d3a4df5fd2d2c24"
+```
 
-# Scenario 2: Direct API event (Byun Jin Sub)
+### Scenario 2: Direct Ticket API
+Events with direct API endpoints for seat availability:
+```bash
+# Events with individual seats
 python main.py "https://admitone.com/events/toronto/pro/other/queen-elizabeth-theatre/artist/byun-jin-sub-wish-list/694ee2570472d0f8bde99b4e"
 
-# JSON output only
-python main.py "https://admitone.com/events/..." --format json
+# Events with ticket categories (no individual seats)
+python main.py "https://admitone.com/events/winnipeg/pro/concerts/the-park-theatre/black-pistol-fire/black-pistol-fire/68c1dfdcf293219b233e8f6b"
+```
 
-# Headless mode with custom output directory
-python main.py "https://admitone.com/events/..." --headless --output-dir ./results
+### Scenario 3: GraphQL API
+Events using GraphQL for ticket information:
+```bash
+python main.py "https://admitone.com/events/toronto/community/comedy/i-know-thi-one/8TB4NT"
+```
+
+### Scenario 4: Embed Widget
+Events with ticket data embedded in HTML:
+```bash
+python main.py "https://admitone.com/events/calgary/pro/concerts/the-palace-theatre/jade-eagleson/jade-eagleson/689e0f85857db55262f707c3"
 ```
 
 ## Output Format
+
+Results are saved to the `output/` directory (or your custom directory) with filenames based on the event name and timestamp.
 
 ### JSON Output
 
@@ -90,105 +116,158 @@ python main.py "https://admitone.com/events/..." --headless --output-dir ./resul
       "status": "available",
       "price_level": "Orchestra 1"
     }
+  ],
+  "ticket_categories": [
+    {
+      "category_id": "12345",
+      "category_name": "General Admission",
+      "base_price": 30.00,
+      "service_fee": 11.00,
+      "total_price": 41.00,
+      "current_stock": 150,
+      "status": "available"
+    }
   ]
 }
 ```
 
 ### CSV Output
 
+For events with individual seats, CSV includes one row per seat:
 | section | row | seat | price | service_fee | total_price | status | price_level | event_name | venue | event_date |
 |---------|-----|------|-------|-------------|-------------|--------|-------------|------------|-------|------------|
 | Orchestra 1 | A | 1 | 59.50 | 16.75 | 76.25 | available | Orchestra 1 | Andrew Callaghan | Queen Elizabeth Theatre | Feb 14, 2026 |
 
-## Architecture
-
-```
-admitone_scraper/
-├── main.py                 # CLI entry point
-├── config.py               # Configuration settings
-├── models.py               # Pydantic data models
-├── browser.py              # Playwright browser automation
-├── scrapers/
-│   ├── base.py             # Abstract base scraper
-│   ├── seatsio_scraper.py  # Scenario 1: seats.io
-│   └── direct_api_scraper.py  # Scenario 2: Direct API
-└── utils/
-    ├── decoder.py          # Hex decoding utilities
-    └── exporters.py        # JSON/CSV export
-```
+For events with ticket categories, CSV includes one row per category:
+| category_name | base_price | service_fee | total_price | current_stock | status | event_name | venue | event_date |
+|---------------|------------|-------------|-------------|---------------|-------|------------|-------|------------|
+| General Admission | 30.00 | 11.00 | 41.00 | 150 | available | Jade Eagleson | The Palace Theatre | Jan 28, 2026 |
 
 ## Supported Scenarios
 
-### Scenario 1: seats.io Integration
+The scraper automatically detects which scenario to use based on the event's API structure. You don't need to specify this manually.
 
-**Detected by**: URLs containing `seatsio.net` or `embed.admitonelive.com`
+### Scenario 1: SeatsIO Integration
 
-**Navigation flow**:
+**What it is**: Events with interactive seat maps powered by seats.io
+
+**How it works**:
 1. Event page → Click "Buy Now"
 2. Modal appears → Click "Select Seats"
-3. seats.io map loads
+3. seats.io interactive map loads
+4. Scraper captures seat availability (hex-encoded) and pricing data
 
 **APIs used**:
 - `cdn-eu.seatsio.net/.../object-statuses` (hex-encoded seat data)
 - `embed.admitonelive.com/api/events/seated/{id}` (pricing)
 
+**Example events**: Andrew Callaghan, Tom Papa
+
+---
+
 ### Scenario 2: Direct Ticket API
 
-**Detected by**: URLs containing `tickets.admitone.com`
+**What it is**: Events using AdmitONE's direct API endpoints
 
-**Navigation flow**:
+**How it works**:
 1. Event page → Click "Buy Now"
-2. Redirect to tickets.admitone.com
+2. Redirects to `tickets.admitone.com`
 3. Click "Buy Now" again
 4. Seating plan loads
+5. Scraper captures seat availability and pricing from API responses
 
 **APIs used**:
-- `tickets.admitone.com/events/{id}/seating-plan/availability`
+- `tickets.admitone.com/events/{id}/seating-plan/availability` (seat availability)
 - `tickets.admitone.com/events/{id}` (event data with price bands)
+
+**Example events**: Byun Jin Sub, Fox Stevenson, Maanu
+
+**Note**: Some events in this scenario have individual seats, others have ticket categories only.
+
+---
+
+### Scenario 3: GraphQL API
+
+**What it is**: Events using GraphQL for ticket information
+
+**How it works**:
+1. Event page has "Get Tickets" button (not "Buy Now")
+2. Clicking opens `checkout.admitone.com` in a new tab
+3. Checkout page makes GraphQL request
+4. Scraper extracts ticket categories from GraphQL response
+
+**APIs used**:
+- `graphql.admitone.com` (GraphQL endpoint)
+- Query: `OrderSummaryEvent` with eventId variable
+
+**Example events**: I Know Thi$ One!, Drinkurwater Bass Bottle Tour
+
+---
+
+### Scenario 4: Embed Widget
+
+**What it is**: Events with ticket data embedded directly in HTML
+
+**How it works**:
+1. Event page → Click "Buy Now"
+2. Modal/iframe loads with `embed.admitonelive.com/event/{slug}`
+3. Ticket data is in HTML tables and JavaScript variables
+4. Scraper parses HTML and extracts ticket categories
+
+**Data sources**:
+- HTML table structure (`#ticket-selection-genad` or `.formtab`)
+- JavaScript variables (`var EVENT = {...}`, `var level_limits = {...}`)
+
+**Example events**: Jade Eagleson
+
+---
 
 ## Troubleshooting
 
-### No seats found
+### No seats or tickets found
 
 1. **Check if the event page loads correctly**: Run without `--headless` to see the browser
 2. **Check API responses**: Enable `--debug` to see captured API endpoints
-3. **Verify the URL**: Make sure you're using the full event URL
+3. **Verify the URL**: Make sure you're using the full event URL from AdmitONE
+4. **Check the scenario**: The scraper logs which scenario was detected - verify it's correct
 
 ### Prices showing as $0
 
 This usually means the pricing API response wasn't captured or parsed correctly:
 1. The pricing endpoint may require additional API calls
 2. Check the debug logs for pricing-related errors
+3. Some events may not have pricing available until later in the flow
 
 ### Browser automation issues
 
-- Make sure Playwright browsers are installed: `playwright install chromium`
-- Try running without `--headless` to see what's happening
-- Check if the site structure has changed
+- **Make sure Playwright browsers are installed**: `playwright install chromium`
+- **Try running without `--headless`**: See what's happening in the browser
+- **Check if the site structure has changed**: AdmitONE may update their pages
+- **Network issues**: Some events require stable internet connection
 
-## Extending
+### Wrong scenario detected
 
-To add support for a new API scenario:
+If the scraper detects the wrong scenario:
+1. Check the debug logs to see which URLs were captured
+2. The detection logic prioritizes certain indicators - check if your event matches expected patterns
+3. Some events may use hybrid approaches that confuse detection
 
-1. Create a new scraper class in `scrapers/`:
-```python
-from scrapers.base import BaseScraper
+## Project Structure
 
-class NewScenarioScraper(BaseScraper):
-    def get_scenario_name(self) -> str:
-        return "new_scenario"
-    
-    async def extract(self, captured_responses, page_html, event_url):
-        # Implementation here
-        pass
 ```
-
-2. Register in `scrapers/__init__.py`
-3. Update scenario detection in `browser.py`
-
-## Legal Notice
-
-This scraper is provided for educational and personal use only. Please:
-- Respect the website's Terms of Service
-- Don't overload servers with excessive requests
-- Consider reaching out to AdmitONE for official API access for commercial use
+admitone_scraper/
+├── main.py                      # CLI entry point
+├── config.py                    # Configuration settings
+├── models.py                    # Pydantic data models
+├── browser.py                   # Playwright browser automation
+├── scrapers/
+│   ├── __init__.py              # Scraper factory
+│   ├── base.py                  # Abstract base scraper
+│   ├── seatsio_scraper.py       # Scenario 1: SeatsIO
+│   ├── direct_api_scraper.py    # Scenario 2: Direct API
+│   ├── graphql_scraper.py       # Scenario 3: GraphQL
+│   └── embed_widget_scraper.py  # Scenario 4: Embed Widget
+└── utils/
+    ├── decoder.py               # Hex decoding utilities
+    └── exporters.py             # JSON/CSV export
+```
