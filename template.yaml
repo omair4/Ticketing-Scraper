@@ -1,0 +1,36 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: AdmitONE inventory scraper - one event per Lambda invocation; run concurrently for multiple events.
+
+Parameters:
+  ProxyUrl:
+    Type: String
+    Default: ""
+    Description: Optional proxy URL (e.g. http://host:port). Leave empty to disable. Can override per invocation via event.proxy.
+
+Resources:
+  AdmitOneScraperFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      PackageType: Image
+      ImageUri: admitone-scraper:latest
+      MemorySize: 3008
+      Timeout: 900
+      Architectures:
+        - x86_64
+      Environment:
+        Variables:
+          # Optional: default proxy when not passed in event
+          PROXY: !Ref ProxyUrl
+    Metadata:
+      DockerTag: latest
+      DockerContext: .
+      Dockerfile: Dockerfile
+
+Outputs:
+  ScraperFunctionArn:
+    Description: ARN of the AdmitONE scraper Lambda function
+    Value: !GetAtt AdmitOneScraperFunction.Arn
+  ScraperFunctionName:
+    Description: Name of the AdmitONE scraper Lambda function
+    Value: !Ref AdmitOneScraperFunction

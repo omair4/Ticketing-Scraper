@@ -27,16 +27,22 @@ class BaseScraper(ABC):
         self.warnings: list[str] = []
     
     @abstractmethod
-    async def extract(self, captured_responses: list[CapturedResponse], 
-                     page_html: str, event_url: str) -> ScrapeResult:
+    async def extract(
+        self,
+        captured_responses: list[CapturedResponse],
+        page_html: str,
+        event_url: str,
+        event_info_override: Optional[EventInfo] = None,
+    ) -> ScrapeResult:
         """
         Extract seat data from captured responses.
-        
+
         Args:
             captured_responses: List of captured API responses
             page_html: Current page HTML content
-            event_url: Original event URL
-        
+            event_url: Original event URL (ticket_url)
+            event_info_override: Optional event metadata; when provided, use instead of extracting from page
+
         Returns:
             ScrapeResult with extracted seat data
         """

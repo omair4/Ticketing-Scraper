@@ -37,8 +37,13 @@ class EmbedWidgetScraper(BaseScraper):
     def get_scenario_name(self) -> str:
         return "embed_widget"
     
-    async def extract(self, captured_responses: list[CapturedResponse],
-                     page_html: str, event_url: str) -> ScrapeResult:
+    async def extract(
+        self,
+        captured_responses: list[CapturedResponse],
+        page_html: str,
+        event_url: str,
+        event_info_override: Optional[EventInfo] = None,
+    ) -> ScrapeResult:
         """Extract ticket categories from HTML and JavaScript variables"""
         
         logger.info("starting_embed_widget_extraction", 
@@ -47,11 +52,11 @@ class EmbedWidgetScraper(BaseScraper):
         
         if not page_html:
             self.add_error("No HTML content available")
-            event_info = await self._extract_event_info_from_html("", event_url)
+            event_info = event_info_override or await self._extract_event_info_from_html("", event_url)
             return self.create_result(event_info, ticket_categories=[])
         
-        # Step 1: Extract event info from HTML and JavaScript
-        event_info = await self._extract_event_info_from_html(page_html, event_url)
+        # Step 1: Extract event info (use override when provided)
+        event_info = event_info_override or await self._extract_event_info_from_html(page_html, event_url)
         
         # Step 2: Extract ticket categories from HTML table
         ticket_categories = await self._extract_ticket_categories_from_html(page_html)

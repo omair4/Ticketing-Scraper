@@ -39,8 +39,13 @@ class DirectAPIScraper(BaseScraper):
     def get_scenario_name(self) -> str:
         return "direct_api"
     
-    async def extract(self, captured_responses: list[CapturedResponse],
-                     page_html: str, event_url: str) -> ScrapeResult:
+    async def extract(
+        self,
+        captured_responses: list[CapturedResponse],
+        page_html: str,
+        event_url: str,
+        event_info_override: Optional[EventInfo] = None,
+    ) -> ScrapeResult:
         """Extract seats from tickets.admitone.com API responses"""
         
         logger.info("starting_direct_api_extraction", response_count=len(captured_responses))
@@ -51,8 +56,8 @@ class DirectAPIScraper(BaseScraper):
         # Step 2: Get ticket types with actual prices and fees
         ticket_prices, service_fees = await self._extract_ticket_prices_and_fees(captured_responses, event_data)
         
-        # Step 3: Get event info
-        event_info = await self._extract_event_info(event_data, captured_responses, event_url, page_html)
+        # Step 3: Get event info (use override when provided)
+        event_info = event_info_override or await self._extract_event_info(event_data, captured_responses, event_url, page_html)
         
         # Step 4: Get seat availability
         seats = await self._extract_seats(captured_responses, price_bands, ticket_prices, service_fees)

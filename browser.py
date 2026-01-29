@@ -5,12 +5,36 @@ Browser automation using Playwright for navigating AdmitONE event pages
 import asyncio
 from typing import Optional, Callable
 from dataclasses import dataclass, field
+from urllib.parse import urlparse
 import structlog
 
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Response
 from config import ScraperConfig, BUTTON_SELECTORS, DEFAULT_CONFIG
 
 logger = structlog.get_logger()
+
+
+def _parse_proxy(proxy_url: Optional[str]) -> Optional[dict]:
+    """
+    Parse proxy URL into Playwright proxy dict.
+    Supports http://host:port and http://username:password@host:port
+    """
+    if not proxy_url or not proxy_url.strip():
+        return None
+    try:
+        parsed = urlparse(proxy_url.strip())
+        if not parsed.hostname:
+            return None
+        server = f"{parsed.scheme or 'http'}://{parsed.hostname}:{parsed.port or 80}"
+        proxy_dict: dict = {"server": server}
+        if parsed.username:
+            proxy_dict["username"] = parsed.username
+        if parsed.password:
+            proxy_dict["password"] = parsed.password
+        return proxy_dict
+    except Exception as e:
+        logger.warning("proxy_parse_failed", proxy_url=proxy_url[:50] if proxy_url else "", error=str(e))
+        return None
 
 
 @dataclass
@@ -70,10 +94,15 @@ class BrowserAutomation:
                 '--no-sandbox'
             ]
         )
-        self.context = await self.browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent=self.config.user_agent
-        )
+        context_options: dict = {
+            "viewport": {"width": 1920, "height": 1080},
+            "user_agent": self.config.user_agent,
+        }
+        proxy_dict = _parse_proxy(self.config.proxy)
+        if proxy_dict:
+            context_options["proxy"] = proxy_dict
+            logger.info("browser_using_proxy", server=proxy_dict.get("server"))
+        self.context = await self.browser.new_context(**context_options)
         self.page = await self.context.new_page()
         
         # Set up response capture

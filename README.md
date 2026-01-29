@@ -252,14 +252,27 @@ If the scraper detects the wrong scenario:
 2. The detection logic prioritizes certain indicators - check if your event matches expected patterns
 3. Some events may use hybrid approaches that confuse detection
 
+## Lambda & Docker Deployment
+
+The scraper can run as an **AWS Lambda function** in a Docker image. Each invocation scrapes **one event**; run Lambda concurrently to scrape many events in parallel.
+
+- **Input:** `eventId`, `event_name`, `venue_name`, `event_datetime`, `ticket_url`; optional `proxy`
+- **Build:** `docker build -t admitone-scraper:latest .`
+- **Deploy:** Use [AWS SAM](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/) with `template.yaml` (`sam build` then `sam deploy --guided`)
+
+Full instructions (payload format, local run, deploy, invoke, proxy, troubleshooting): **[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)**
+
 ## Project Structure
 
 ```
 admitone_scraper/
 ├── main.py                      # CLI entry point
+├── lambda_handler.py            # AWS Lambda entry point (one event per invocation)
 ├── config.py                    # Configuration settings
 ├── models.py                    # Pydantic data models
 ├── browser.py                   # Playwright browser automation
+├── Dockerfile                   # Container image for Lambda
+├── template.yaml                # SAM template for deployment
 ├── scrapers/
 │   ├── __init__.py              # Scraper factory
 │   ├── base.py                  # Abstract base scraper
@@ -267,7 +280,9 @@ admitone_scraper/
 │   ├── direct_api_scraper.py    # Scenario 2: Direct API
 │   ├── graphql_scraper.py       # Scenario 3: GraphQL
 │   └── embed_widget_scraper.py  # Scenario 4: Embed Widget
-└── utils/
-    ├── decoder.py               # Hex decoding utilities
-    └── exporters.py             # JSON/CSV export
+├── utils/
+│   ├── decoder.py               # Hex decoding utilities
+│   └── exporters.py             # JSON/CSV export
+└── docs/
+    └── DEPLOYMENT.md             # Lambda & Docker instructions
 ```

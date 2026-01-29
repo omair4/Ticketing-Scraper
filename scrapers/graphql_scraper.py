@@ -49,8 +49,13 @@ class GraphQLScraper(BaseScraper):
     def get_scenario_name(self) -> str:
         return "graphql"
     
-    async def extract(self, captured_responses: list[CapturedResponse],
-                     page_html: str, event_url: str) -> ScrapeResult:
+    async def extract(
+        self,
+        captured_responses: list[CapturedResponse],
+        page_html: str,
+        event_url: str,
+        event_info_override: Optional[EventInfo] = None,
+    ) -> ScrapeResult:
         """Extract ticket categories from GraphQL API responses"""
         
         logger.info("starting_graphql_extraction", response_count=len(captured_responses))
@@ -60,12 +65,12 @@ class GraphQLScraper(BaseScraper):
         
         if not graphql_data:
             self.add_error("Could not find GraphQL response")
-            # Try to extract event info from HTML as fallback
-            event_info = await self._extract_event_info_from_html(page_html, event_url)
+            # Use override or extract event info from HTML as fallback
+            event_info = event_info_override or await self._extract_event_info_from_html(page_html, event_url)
             return self.create_result(event_info, ticket_categories=[])
         
-        # Step 2: Extract event info
-        event_info = await self._extract_event_info(graphql_data, captured_responses, event_url, page_html)
+        # Step 2: Extract event info (use override when provided)
+        event_info = event_info_override or await self._extract_event_info(graphql_data, captured_responses, event_url, page_html)
         
         # Step 3: Extract ticket categories
         ticket_categories = await self._extract_ticket_categories(graphql_data)

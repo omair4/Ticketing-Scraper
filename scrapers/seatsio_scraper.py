@@ -37,8 +37,13 @@ class SeatsIOScraper(BaseScraper):
     def get_scenario_name(self) -> str:
         return "seatsio"
     
-    async def extract(self, captured_responses: list[CapturedResponse],
-                     page_html: str, event_url: str) -> ScrapeResult:
+    async def extract(
+        self,
+        captured_responses: list[CapturedResponse],
+        page_html: str,
+        event_url: str,
+        event_info_override: Optional[EventInfo] = None,
+    ) -> ScrapeResult:
         """Extract seats from seats.io API responses"""
         
         logger.info("starting_seatsio_extraction", response_count=len(captured_responses))
@@ -49,8 +54,8 @@ class SeatsIOScraper(BaseScraper):
         if not price_levels:
             self.add_warning("Could not extract pricing data - prices may be missing")
         
-        # Step 2: Get event info
-        event_info = await self._extract_event_info(captured_responses, event_url, page_html)
+        # Step 2: Get event info (use override when provided)
+        event_info = event_info_override or await self._extract_event_info(captured_responses, event_url, page_html)
         
         # Step 3: Get seat availability from seats.io
         seats = await self._extract_seats(captured_responses, price_levels)

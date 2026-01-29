@@ -16,6 +16,7 @@ class ScraperConfig:
     
     # Network settings
     request_timeout: int = 30  # seconds for httpx
+    proxy: Optional[str] = None  # e.g. http://host:port or http://user:pass@host:port
     
     # Wait times (milliseconds)
     click_delay: int = 2000  # Wait after clicking buttons (increased for iframe loading)

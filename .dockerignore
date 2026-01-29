@@ -1,0 +1,44 @@
+# Git and IDE
+.git
+.gitignore
+.cursor
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Python
+__pycache__
+*.py[cod]
+*$py.class
+*.so
+.Python
+.env
+.venv
+venv
+ENV
+
+# Output and local data
+output/
+*.csv
+*.json
+!requirements.txt
+
+# Docs and plans (optional: remove to shrink image)
+*.md
+.plans
+.cursor/plans
+
+# Tests (optional: remove to shrink image)
+test_*.py
+tests/
+pytest.ini
+.pytest_cache
+.coverage
+htmlcov/
+
+# Misc
+links.txt
+*.log
+.DS_Store

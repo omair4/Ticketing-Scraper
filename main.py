@@ -15,6 +15,7 @@ import asyncio
 import argparse
 import sys
 from pathlib import Path
+from typing import Optional
 import structlog
 
 # Configure logging
@@ -48,66 +49,78 @@ from models import ScrapeResult, EventInfo
 logger = structlog.get_logger()
 
 
-async def scrape_event(event_url: str, config: ScraperConfig = None) -> ScrapeResult:
+async def scrape_event(
+    event_url: str,
+    config: ScraperConfig = None,
+    event_info_override: Optional[EventInfo] = None,
+) -> ScrapeResult:
     """
     Main scraping function.
-    
+
     Args:
-        event_url: Full URL to the AdmitONE event page
+        event_url: Full URL to the AdmitONE event page (ticket_url)
         config: Optional scraper configuration
-    
+        event_info_override: Optional event metadata (eventId, event_name, venue_name,
+            event_datetime). When provided, scrapers use this instead of extracting from page.
+
     Returns:
         ScrapeResult with all extracted seat data
     """
     config = config or DEFAULT_CONFIG
-    
-    logger.info("="*60)
+
+    logger.info("=" * 60)
     logger.info("ADMITONE TICKET SCRAPER")
-    logger.info("="*60)
+    logger.info("=" * 60)
     logger.info("target_url", url=event_url)
-    
+
+    # Default event info for error responses
+    default_event = event_info_override or EventInfo(
+        event_id="unknown",
+        event_name="Unknown",
+        venue_name="Unknown",
+        event_url=event_url,
+    )
+
     # Step 1: Navigate to the event and capture API responses
     async with BrowserAutomation(config) as browser:
         logger.info("step_1", description="Navigating to event page...")
-        
+
         nav_result = await browser.navigate_to_seats(event_url)
-        
+
         if not nav_result.success:
             logger.error("navigation_failed", error=nav_result.error)
             return ScrapeResult(
-                event=EventInfo(
-                    event_id="unknown",
-                    event_name="Unknown",
-                    venue_name="Unknown",
-                    event_url=event_url
-                ),
+                event=default_event,
                 scenario_type="unknown",
-                errors=[f"Navigation failed: {nav_result.error}"]
+                errors=[f"Navigation failed: {nav_result.error}"],
             )
-        
-        logger.info("navigation_complete", 
-                   scenario=nav_result.scenario_detected,
-                   responses_captured=len(nav_result.captured_responses))
-        
+
+        logger.info(
+            "navigation_complete",
+            scenario=nav_result.scenario_detected,
+            responses_captured=len(nav_result.captured_responses),
+        )
+
         # Log captured API endpoints for debugging
         for resp in nav_result.captured_responses:
             logger.debug("captured_api", url=resp.url[:80], status=resp.status)
-        
+
         # Step 2: Select and run appropriate scraper
-        scenario = nav_result.scenario_detected or 'unknown'
+        scenario = nav_result.scenario_detected or "unknown"
         logger.info("step_2", description=f"Using {scenario} scraper...")
-        
+
         scraper = get_scraper_for_scenario(scenario)
-        
+
         # Step 3: Extract seat data
         logger.info("step_3", description="Extracting seat data...")
-        
+
         result = await scraper.extract(
             captured_responses=nav_result.captured_responses,
             page_html=nav_result.page_html,
-            event_url=event_url
+            event_url=event_url,
+            event_info_override=event_info_override,
         )
-        
+
         return result
 
 
