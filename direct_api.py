@@ -363,6 +363,14 @@ class DirectAPICaller:
         if embedded_band and not level_name:
             level_name = embedded_band.get('name', '')
         
+        # Position (if present in response)
+        x_val = item.get('x')
+        y_val = item.get('y')
+        if x_val is not None:
+            x_val = float(x_val)
+        if y_val is not None:
+            y_val = float(y_val)
+        
         return Seat(
             section=section,
             row=row,
@@ -370,7 +378,9 @@ class DirectAPICaller:
             price=price,
             service_fee=None,
             status=status,
-            price_level=level_name
+            price_level=level_name,
+            x=x_val,
+            y=y_val,
         )
     
     def _extract_general_admission_tickets(self, event_data: dict,

@@ -223,12 +223,26 @@ class SeatsIOScraper(BaseScraper):
                     if not uuid:  # Skip seats without uuid (can't match to availability)
                         continue
                     
+                    # Position and ADA from chart seat object
+                    x_val = seat.get('x')
+                    y_val = seat.get('y')
+                    if x_val is not None:
+                        x_val = float(x_val)
+                    if y_val is not None:
+                        y_val = float(y_val)
+                    semi_ambulatory = bool(seat.get('semiAmbulatorySeat', False))
+                    hearing_impaired = bool(seat.get('hearingImpaired', False))
+                    sign_lang = bool(seat.get('signLanguageInterpretation', False))
+                    ada = semi_ambulatory or hearing_impaired or sign_lang
                     chart_seats.append({
                         'section': section_label or 'Unknown',
                         'row': row_label or 'Unknown',
                         'seat_label': seat_label or '',
                         'categoryKey': str(category_key) if category_key is not None else None,
-                        'uuid': uuid
+                        'uuid': uuid,
+                        'x': x_val,
+                        'y': y_val,
+                        'ADA': ada,
                     })
             
             logger.info("extracted_chart_data", 
@@ -307,7 +321,7 @@ class SeatsIOScraper(BaseScraper):
                 category_key, category_map, price_levels
             )
             
-            # Create seat object
+            # Create seat object (include x, y, ADA from chart)
             seat = Seat(
                 section=self.normalize_section_name(section),
                 row=row,
@@ -316,7 +330,10 @@ class SeatsIOScraper(BaseScraper):
                 service_fee=service_fee,
                 status=status,
                 price_level=level_name,
-                price_level_id=level_id
+                price_level_id=level_id,
+                x=chart_seat.get('x'),
+                y=chart_seat.get('y'),
+                ada=chart_seat.get('ADA'),
             )
             seats.append(seat)
         

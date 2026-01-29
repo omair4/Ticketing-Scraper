@@ -31,6 +31,10 @@ class Seat(BaseModel):
     price_level: Optional[str] = Field(default=None, description="Price level/tier name")
     price_level_id: Optional[str] = Field(default=None, description="Internal price level ID")
     restricted_view: Optional[bool] = Field(default=None, description="Whether the seat has restricted view (true/false, only included if present in API)")
+    # Position from chart (seats.io)
+    x: Optional[float] = Field(default=None, description="X coordinate from chart")
+    y: Optional[float] = Field(default=None, description="Y coordinate from chart")
+    ada: Optional[bool] = Field(default=None, description="True if semiAmbulatorySeat, hearingImpaired, or signLanguageInterpretation")
     
     @computed_field
     @property

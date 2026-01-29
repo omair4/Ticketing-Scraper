@@ -458,7 +458,6 @@ class DirectAPIScraper(BaseScraper):
             seats_data = data.get('seats', [])
             
             logger.info("parsing_seats", count=len(seats_data))
-            
             for seat_data in seats_data:
                 try:
                     seat = self._parse_seat(seat_data, price_bands, ticket_prices, service_fees or {})
@@ -473,6 +472,18 @@ class DirectAPIScraper(BaseScraper):
         # If we didn't get seats from availability, try parsing from seating plan schema
         if not seats:
             seats = await self._extract_seats_from_schema(responses, price_bands, ticket_prices, service_fees or {})
+        else:
+            # Enrich availability seats with x, y from schema if missing
+            position_map = await self._build_schema_position_map(responses)
+            if position_map:
+                enriched = []
+                for s in seats:
+                    key = (self.normalize_section_name(s.section), s.row, s.seat)
+                    pos = position_map.get(key)
+                    if pos and (s.x is None or s.y is None):
+                        s = s.model_copy(update={"x": pos.get("x"), "y": pos.get("y")})
+                    enriched.append(s)
+                seats = enriched
         
         return seats
     
@@ -574,6 +585,13 @@ class DirectAPIScraper(BaseScraper):
             if restricted_value is not None:
                 # Ensure it's a proper boolean
                 restricted_view = bool(int(float(restricted_value)))
+        # Position from availability API (if present)
+        x_val = seat_data.get('x')
+        y_val = seat_data.get('y')
+        if x_val is not None:
+            x_val = float(x_val)
+        if y_val is not None:
+            y_val = float(y_val)
         return Seat(
             section=self.normalize_section_name(section),
             row=row,
@@ -583,7 +601,9 @@ class DirectAPIScraper(BaseScraper):
             status=status,
             price_level=level_name,
             price_level_id=str(price_band_id) if price_band_id else None,
-            restricted_view=restricted_view
+            restricted_view=restricted_view,
+            x=x_val,
+            y=y_val,
         )
     
     async def _extract_seats_from_schema(self, responses: list[CapturedResponse],
@@ -619,6 +639,76 @@ class DirectAPIScraper(BaseScraper):
                     pass
         
         return seats
+    
+    async def _build_schema_position_map(self, responses: list[CapturedResponse]) -> dict:
+        """
+        Build (section, row, seat) -> {"x": float, "y": float} from seating plan schema.
+        Used to enrich availability seats with x, y when the availability API doesn't include them.
+        """
+        position_map = {}
+        for response in responses:
+            if 'tickets.admitone.com' not in response.url or not response.body:
+                continue
+            try:
+                data = json.loads(response.body)
+                schema = None
+                if 'seating_plan' in data:
+                    schema = data['seating_plan'].get('schema')
+                elif 'props' in data:
+                    sp = data['props'].get('seating_plan', {})
+                    schema = sp.get('schema')
+                if not schema:
+                    continue
+                # Try schema.objects[] first (blocks with rows[].columns[])
+                objects = schema.get('objects', [])
+                for obj in objects:
+                    if not isinstance(obj, dict):
+                        continue
+                    block_label = obj.get('label', '') or obj.get('name', '')
+                    for row in obj.get('rows', []) or []:
+                        if not isinstance(row, dict):
+                            continue
+                        row_label = row.get('label', '')
+                        for col in row.get('columns', []) or []:
+                            if not isinstance(col, dict) or col.get('type') != 'seat':
+                                continue
+                            if col.get('isDeleted'):
+                                continue
+                            seat_num = col.get('defaultLabel', '') or str(col.get('name', ''))
+                            x_val, y_val = col.get('x'), col.get('y')
+                            if x_val is not None and y_val is not None:
+                                key = (self.normalize_section_name(block_label), row_label, seat_num)
+                                position_map[key] = {"x": float(x_val), "y": float(y_val)}
+                # Fallback: top-level schema.rows[] (e.g. rows with block id)
+                if not position_map and schema.get('rows'):
+                    block_id_to_label = {}
+                    for obj in objects or []:
+                        if isinstance(obj, dict):
+                            bid = obj.get('id') or obj.get('local_id')
+                            bl = obj.get('label', '') or obj.get('name', '')
+                            if bid is not None and bl:
+                                block_id_to_label[bid] = bl
+                    for row in schema.get('rows', []) or []:
+                        if not isinstance(row, dict):
+                            continue
+                        row_label = row.get('label', '')
+                        block_id = row.get('block')
+                        block_label = block_id_to_label.get(block_id, '') if block_id is not None else ''
+                        for col in row.get('columns', []) or []:
+                            if not isinstance(col, dict) or col.get('type') != 'seat':
+                                continue
+                            if col.get('isDeleted'):
+                                continue
+                            seat_num = col.get('defaultLabel', '') or str(col.get('name', ''))
+                            x_val, y_val = col.get('x'), col.get('y')
+                            if x_val is not None and y_val is not None and block_label:
+                                key = (self.normalize_section_name(block_label), row_label, seat_num)
+                                position_map[key] = {"x": float(x_val), "y": float(y_val)}
+                if position_map:
+                    break
+            except Exception:
+                continue
+        return position_map
     
     def _parse_schema_seats(self, schema: dict, price_bands: Dict[int, PriceBand],
                            ticket_prices: Dict[int, Decimal], service_fees: Dict[int, Decimal] = None) -> list[Seat]:
@@ -657,6 +747,13 @@ class DirectAPIScraper(BaseScraper):
                     seat_num = col.get('defaultLabel', '') or str(col.get('name', ''))
                     price_band_id = col.get('priceBandId')
                     
+                    # Position from schema (if present)
+                    x_val = col.get('x')
+                    y_val = col.get('y')
+                    if x_val is not None:
+                        x_val = float(x_val)
+                    if y_val is not None:
+                        y_val = float(y_val)
                     # Get price
                     price = Decimal('0')
                     level_name = ""
@@ -699,7 +796,9 @@ class DirectAPIScraper(BaseScraper):
                             status=SeatStatus.AVAILABLE,  # Schema doesn't have status
                             price_level=level_name,
                             price_level_id=str(price_band_id) if price_band_id else None,
-                            restricted_view=restricted_view
+                            restricted_view=restricted_view,
+                            x=x_val,
+                            y=y_val,
                         ))
         
         return seats
