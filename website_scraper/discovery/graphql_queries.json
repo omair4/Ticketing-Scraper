@@ -1,0 +1,519 @@
+{
+  "requests": [
+    {
+      "operationName": "PublicProEvents",
+      "query": "query PublicProEvents($take: Int! = 10, $skip: Int! = 0, $search: String, $city: String, $sellerId: String, $venueId: [ObjectID!], $location: GeolocationPoints, $distance: Int!, $carousel: Boolean, $featured: Boolean, $includedGenres: [String!], $excludedGenres: [String!], $startDateRange: DateRangeInput, $artistId: ObjectID, $excludeStatus: [ProEventStatus!]) {\n  publicProEvents(\n    take: $take\n    skip: $skip\n    search: $search\n    city: $city\n    sellerId: $sellerId\n    venueId: $venueId\n    location: $location\n    distance: $distance\n    carousel: $carousel\n    featured: $featured\n    includedGenres: $includedGenres\n    excludedGenres: $excludedGenres\n    startDateRange: $startDateRange\n    artistId: $artistId\n    excludeStatus: $excludeStatus\n  ) {\n    items {\n      category\n      id\n      title\n      admitoneTitle\n      description\n      showclixId\n      ageLimit\n      ageLimitValue\n      clientEventUrl\n      venue {\n        id\n        name\n        city\n        accessibilityDetails\n        __typename\n      }\n      sellerId\n      admitoneTitle\n      shortName\n      imageUrl\n      status\n      hidden\n      hiddenUntil\n      featured\n      carousel\n      carouselLinkTo\n      salesOpen\n      eventDoorTime\n      eventStart\n      eventEnd\n      eventTimeStart\n      eventTimeEnd\n      redirect\n      provider\n      tourName\n      layaway\n      fbPixelId\n      tiktokPixelId\n      twitterPixelId\n      snapchatPixelId\n      pinterestPixelId\n      soldOut\n      searchableTags\n      promotions {\n        onSale\n        discount\n        promoCode\n        discountUntil\n        discountStart\n        __typename\n      }\n      bannerTall\n      ticketRange\n      ticketRangeIncludesFees\n      waitlistUrl\n      accessibilityDetails\n      promoters {\n        promoterName\n        promoterLink\n        __typename\n      }\n      frontEndGenres\n      internalGenres\n      artistIds\n      secondaryArtistIds\n      timezone\n      createdAt\n      updatedAt\n      resaleEventId\n      artists {\n        id\n        title\n        slug\n        __typename\n      }\n      secondaryArtists {\n        id\n        title\n        slug\n        __typename\n      }\n      __typename\n    }\n    total\n    skip\n    take\n    __typename\n  }\n}",
+      "variables": {
+        "take": 4,
+        "skip": 0,
+        "location": {
+          "latitude": 43.6532,
+          "longitude": -79.3832
+        },
+        "distance": 75,
+        "excludeStatus": [
+          "Cancelled"
+        ],
+        "startDateRange": {
+          "from": "2026-02-02T19:00:00.000Z",
+          "to": "2026-03-04T19:00:00.000Z"
+        }
+      },
+      "url": "https://graphql.admitone.com/"
+    },
+    {
+      "operationName": "GetOrganizerPublicProfile",
+      "query": "query GetOrganizerPublicProfile($organizerId: String!) {\n  getOrganizerPublicProfile(organizerId: $organizerId) {\n    id\n    screenName\n    userType\n    themeColour\n    website\n    instagram\n    facebook\n    twitterX\n    tiktok\n    linkedin\n    bio\n    profileImg\n    VenueLocation\n    CoverPhoto\n    CoverPhotoAlt\n    Gallery\n    EventListingOptions\n    DefaultListingOption\n    __typename\n  }\n}",
+      "variables": {
+        "organizerId": "654b9cee4fe92a12f6125b2e"
+      },
+      "url": "https://graphql.admitone.com/"
+    },
+    {
+      "operationName": "OrganizerEvents",
+      "query": "query OrganizerEvents($organizerId: String!, $current: Boolean! = true, $take: Int! = 10, $skip: Int! = 0, $orderBy: BsonSortInput, $startDateRange: DateRangeInput) {\n  organizerEvents(\n    organizerId: $organizerId\n    current: $current\n    take: $take\n    skip: $skip\n    orderBy: $orderBy\n    startDateRange: $startDateRange\n  ) {\n    items {\n      id\n      status\n      address {\n        formattedAddress\n        businessName\n        __typename\n      }\n      place\n      url\n      endDate\n      eventImage\n      embeddedImages\n      videoEmbedUrl\n      feesRange {\n        hasLockedCategoryWithInventory\n        soldOut\n        min\n        max\n        __typename\n      }\n      ticketCategories(donationsFilter: with) {\n        status\n        quantityDistributed\n        quantityIssued\n        quantityLimit\n        visibility\n        codeToUnlock\n        flexiblePricing {\n          isDonation\n          __typename\n        }\n        __typename\n      }\n      startDate\n      timezone\n      title\n      category\n      description\n      presentedByName\n      eventTags\n      organizerType\n      organizerColor\n      organizerId\n      eventOrganizerDisplayName\n      shortEventId\n      ga4\n      fbpid\n      ttpid\n      twpid\n      scpid\n      ldpid\n      spid\n      eventCapacity\n      visibility\n      seriesParentEventId\n      waitlistEnabled\n      recurringEvents {\n        id\n        title\n        startDate\n        endDate\n        shortEventId\n        __typename\n      }\n      suspension {\n        indefinite\n        __typename\n      }\n      overrideDateRange\n      overridePriceRange\n      __typename\n    }\n    total\n    skip\n    __typename\n  }\n}",
+      "variables": {
+        "current": true,
+        "take": 3,
+        "skip": 0,
+        "organizerId": "654b9cee4fe92a12f6125b2e",
+        "startDateRange": {
+          "from": "2026-02-02T21:59:14.465Z",
+          "to": "3000-01-01T00:00:00.000Z"
+        }
+      },
+      "url": "https://graphql.admitone.com/"
+    },
+    {
+      "operationName": "Events",
+      "query": "query Events($take: Int! = 10, $skip: Int! = 0, $search: String, $surface: String, $categories: [EventCategory!], $city: EventCity, $featured: Boolean, $tags: [String!], $eventGroupTag: String, $startDateRange: DateRangeInput, $pricing: PricingInput, $locations: [EventLocation!], $location: GeolocationPoints, $distance: Int, $orderBy: BsonSortInput) {\n  events(\n    take: $take\n    skip: $skip\n    search: $search\n    surface: $surface\n    categories: $categories\n    city: $city\n    featured: $featured\n    tags: $tags\n    eventGroupTag: $eventGroupTag\n    startDateRange: $startDateRange\n    pricing: $pricing\n    locations: $locations\n    location: $location\n    distance: $distance\n    orderBy: $orderBy\n  ) {\n    items {\n      id\n      address {\n        formattedAddress\n        city\n        __typename\n      }\n      category\n      ticketCategories(donationsFilter: with) {\n        status\n        quantityDistributed\n        quantityIssued\n        quantityLimit\n        __typename\n      }\n      eventCapacity\n      endDate\n      eventImage\n      feesRange {\n        hasLockedCategoryWithInventory\n        soldOut\n        min\n        max\n        __typename\n      }\n      startDate\n      timezone\n      title\n      seriesParentEventId\n      shortEventId\n      __typename\n    }\n    total\n    __typename\n  }\n}",
+      "variables": {
+        "take": 4,
+        "skip": 0,
+        "location": {
+          "latitude": 43.6532,
+          "longitude": -79.3832
+        },
+        "distance": 75,
+        "search": null,
+        "surface": null,
+        "tags": [],
+        "orderBy": {
+          "field": "start_date",
+          "sort": 1
+        },
+        "startDateRange": {
+          "from": "2026-02-02T19:00:00.000Z",
+          "to": "2026-03-04T19:00:00.000Z"
+        }
+      },
+      "url": "https://graphql.admitone.com/"
+    }
+  ],
+  "responses": [
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "getOrganizerPublicProfile": {
+          "id": "NoneType",
+          "screenName": "str",
+          "userType": "str",
+          "themeColour": "str",
+          "website": "str",
+          "instagram": "str",
+          "facebook": "str",
+          "twitterX": "str",
+          "tiktok": "str",
+          "linkedin": "str",
+          "bio": "str",
+          "profileImg": "str",
+          "VenueLocation": "str",
+          "CoverPhoto": "str",
+          "CoverPhotoAlt": "str",
+          "Gallery": "NoneType",
+          "EventListingOptions": "[1 items]",
+          "DefaultListingOption": "NoneType",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "getOrganizerPublicProfile": {
+          "id": "NoneType",
+          "screenName": "str",
+          "userType": "str",
+          "themeColour": "str",
+          "website": "str",
+          "instagram": "str",
+          "facebook": "str",
+          "twitterX": "str",
+          "tiktok": "str",
+          "linkedin": "str",
+          "bio": "str",
+          "profileImg": "str",
+          "VenueLocation": "str",
+          "CoverPhoto": "str",
+          "CoverPhotoAlt": "str",
+          "Gallery": "NoneType",
+          "EventListingOptions": "[1 items]",
+          "DefaultListingOption": "NoneType",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "getOrganizerPublicProfile": {
+          "id": "NoneType",
+          "screenName": "str",
+          "userType": "str",
+          "themeColour": "str",
+          "website": "str",
+          "instagram": "str",
+          "facebook": "str",
+          "twitterX": "str",
+          "tiktok": "str",
+          "linkedin": "str",
+          "bio": "str",
+          "profileImg": "str",
+          "VenueLocation": "str",
+          "CoverPhoto": "str",
+          "CoverPhotoAlt": "str",
+          "Gallery": "[4 items]",
+          "EventListingOptions": "[1 items]",
+          "DefaultListingOption": "NoneType",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "organizerEvents": {
+          "items": [
+            {
+              "id": "...",
+              "status": "...",
+              "address": "...",
+              "place": "...",
+              "url": "...",
+              "endDate": "...",
+              "eventImage": "...",
+              "embeddedImages": "...",
+              "videoEmbedUrl": "...",
+              "feesRange": "...",
+              "ticketCategories": "...",
+              "startDate": "...",
+              "timezone": "...",
+              "title": "...",
+              "category": "...",
+              "description": "...",
+              "presentedByName": "...",
+              "eventTags": "...",
+              "organizerType": "...",
+              "organizerColor": "...",
+              "organizerId": "...",
+              "eventOrganizerDisplayName": "...",
+              "shortEventId": "...",
+              "ga4": "...",
+              "fbpid": "...",
+              "ttpid": "...",
+              "twpid": "...",
+              "scpid": "...",
+              "ldpid": "...",
+              "spid": "...",
+              "eventCapacity": "...",
+              "visibility": "...",
+              "seriesParentEventId": "...",
+              "waitlistEnabled": "...",
+              "recurringEvents": "...",
+              "suspension": "...",
+              "overrideDateRange": "...",
+              "overridePriceRange": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "skip": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "publicProEvents": {
+          "items": [
+            {
+              "category": "...",
+              "id": "...",
+              "title": "...",
+              "admitoneTitle": "...",
+              "description": "...",
+              "showclixId": "...",
+              "ageLimit": "...",
+              "ageLimitValue": "...",
+              "clientEventUrl": "...",
+              "venue": "...",
+              "sellerId": "...",
+              "shortName": "...",
+              "imageUrl": "...",
+              "status": "...",
+              "hidden": "...",
+              "hiddenUntil": "...",
+              "featured": "...",
+              "carousel": "...",
+              "carouselLinkTo": "...",
+              "salesOpen": "...",
+              "eventDoorTime": "...",
+              "eventStart": "...",
+              "eventEnd": "...",
+              "eventTimeStart": "...",
+              "eventTimeEnd": "...",
+              "redirect": "...",
+              "provider": "...",
+              "tourName": "...",
+              "layaway": "...",
+              "fbPixelId": "...",
+              "tiktokPixelId": "...",
+              "twitterPixelId": "...",
+              "snapchatPixelId": "...",
+              "pinterestPixelId": "...",
+              "soldOut": "...",
+              "searchableTags": "...",
+              "promotions": "...",
+              "bannerTall": "...",
+              "ticketRange": "...",
+              "ticketRangeIncludesFees": "...",
+              "waitlistUrl": "...",
+              "accessibilityDetails": "...",
+              "promoters": "...",
+              "frontEndGenres": "...",
+              "internalGenres": "...",
+              "artistIds": "...",
+              "secondaryArtistIds": "...",
+              "timezone": "...",
+              "createdAt": "...",
+              "updatedAt": "...",
+              "resaleEventId": "...",
+              "artists": "...",
+              "secondaryArtists": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "skip": "int",
+          "take": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "organizerEvents": {
+          "items": [
+            {
+              "id": "...",
+              "status": "...",
+              "address": "...",
+              "place": "...",
+              "url": "...",
+              "endDate": "...",
+              "eventImage": "...",
+              "embeddedImages": "...",
+              "videoEmbedUrl": "...",
+              "feesRange": "...",
+              "ticketCategories": "...",
+              "startDate": "...",
+              "timezone": "...",
+              "title": "...",
+              "category": "...",
+              "description": "...",
+              "presentedByName": "...",
+              "eventTags": "...",
+              "organizerType": "...",
+              "organizerColor": "...",
+              "organizerId": "...",
+              "eventOrganizerDisplayName": "...",
+              "shortEventId": "...",
+              "ga4": "...",
+              "fbpid": "...",
+              "ttpid": "...",
+              "twpid": "...",
+              "scpid": "...",
+              "ldpid": "...",
+              "spid": "...",
+              "eventCapacity": "...",
+              "visibility": "...",
+              "seriesParentEventId": "...",
+              "waitlistEnabled": "...",
+              "recurringEvents": "...",
+              "suspension": "...",
+              "overrideDateRange": "...",
+              "overridePriceRange": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "skip": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "events": {
+          "items": [
+            {
+              "id": "...",
+              "address": "...",
+              "category": "...",
+              "ticketCategories": "...",
+              "eventCapacity": "...",
+              "endDate": "...",
+              "eventImage": "...",
+              "feesRange": "...",
+              "startDate": "...",
+              "timezone": "...",
+              "title": "...",
+              "seriesParentEventId": "...",
+              "shortEventId": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "organizerEvents": {
+          "items": [
+            {
+              "id": "...",
+              "status": "...",
+              "address": "...",
+              "place": "...",
+              "url": "...",
+              "endDate": "...",
+              "eventImage": "...",
+              "embeddedImages": "...",
+              "videoEmbedUrl": "...",
+              "feesRange": "...",
+              "ticketCategories": "...",
+              "startDate": "...",
+              "timezone": "...",
+              "title": "...",
+              "category": "...",
+              "description": "...",
+              "presentedByName": "...",
+              "eventTags": "...",
+              "organizerType": "...",
+              "organizerColor": "...",
+              "organizerId": "...",
+              "eventOrganizerDisplayName": "...",
+              "shortEventId": "...",
+              "ga4": "...",
+              "fbpid": "...",
+              "ttpid": "...",
+              "twpid": "...",
+              "scpid": "...",
+              "ldpid": "...",
+              "spid": "...",
+              "eventCapacity": "...",
+              "visibility": "...",
+              "seriesParentEventId": "...",
+              "waitlistEnabled": "...",
+              "recurringEvents": "...",
+              "suspension": "...",
+              "overrideDateRange": "...",
+              "overridePriceRange": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "skip": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "events": {
+          "items": [
+            {
+              "id": "...",
+              "address": "...",
+              "category": "...",
+              "ticketCategories": "...",
+              "eventCapacity": "...",
+              "endDate": "...",
+              "eventImage": "...",
+              "feesRange": "...",
+              "startDate": "...",
+              "timezone": "...",
+              "title": "...",
+              "seriesParentEventId": "...",
+              "shortEventId": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    },
+    {
+      "url": "https://graphql.admitone.com/",
+      "structure": {
+        "publicProEvents": {
+          "items": [
+            {
+              "category": "...",
+              "id": "...",
+              "title": "...",
+              "admitoneTitle": "...",
+              "description": "...",
+              "showclixId": "...",
+              "ageLimit": "...",
+              "ageLimitValue": "...",
+              "clientEventUrl": "...",
+              "venue": "...",
+              "sellerId": "...",
+              "shortName": "...",
+              "imageUrl": "...",
+              "status": "...",
+              "hidden": "...",
+              "hiddenUntil": "...",
+              "featured": "...",
+              "carousel": "...",
+              "carouselLinkTo": "...",
+              "salesOpen": "...",
+              "eventDoorTime": "...",
+              "eventStart": "...",
+              "eventEnd": "...",
+              "eventTimeStart": "...",
+              "eventTimeEnd": "...",
+              "redirect": "...",
+              "provider": "...",
+              "tourName": "...",
+              "layaway": "...",
+              "fbPixelId": "...",
+              "tiktokPixelId": "...",
+              "twitterPixelId": "...",
+              "snapchatPixelId": "...",
+              "pinterestPixelId": "...",
+              "soldOut": "...",
+              "searchableTags": "...",
+              "promotions": "...",
+              "bannerTall": "...",
+              "ticketRange": "...",
+              "ticketRangeIncludesFees": "...",
+              "waitlistUrl": "...",
+              "accessibilityDetails": "...",
+              "promoters": "...",
+              "frontEndGenres": "...",
+              "internalGenres": "...",
+              "artistIds": "...",
+              "secondaryArtistIds": "...",
+              "timezone": "...",
+              "createdAt": "...",
+              "updatedAt": "...",
+              "resaleEventId": "...",
+              "artists": "...",
+              "secondaryArtists": "...",
+              "__typename": "..."
+            }
+          ],
+          "total": "int",
+          "skip": "int",
+          "take": "int",
+          "__typename": "str"
+        }
+      },
+      "sample": []
+    }
+  ],
+  "urls_visited": [
+    "https://admitone.com/events/toronto",
+    "https://admitone.com/search?search=concert",
+    "https://admitone.com/events/calgary"
+  ]
+}
