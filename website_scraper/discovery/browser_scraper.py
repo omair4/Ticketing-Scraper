@@ -71,8 +71,8 @@ class BrowserEventsScraper:
                         for e in events_pro + events_community:
                             if event_type and e.event_type != event_type:
                                 continue
-                            if e.event_id and e.event_id not in seen_ids:
-                                seen_ids.add(e.event_id)
+                            if e.mongo_event_id and e.mongo_event_id not in seen_ids:
+                                seen_ids.add(e.mongo_event_id)
                                 result.events.append(e)
 
                 # Also parse HTML for event links (fallback)
@@ -80,8 +80,8 @@ class BrowserEventsScraper:
                 for e in html_events:
                     if event_type and e.event_type != event_type:
                         continue
-                    if e.event_id and e.event_id not in seen_ids:
-                        seen_ids.add(e.event_id)
+                    if e.mongo_event_id and e.mongo_event_id not in seen_ids:
+                        seen_ids.add(e.mongo_event_id)
                         result.events.append(e)
 
         # Compute stats
@@ -127,7 +127,7 @@ class BrowserEventsScraper:
                     )
                 if match:
                     ev_type = match.group(1)
-                    event_id = match.group(2)
+                    url_id = match.group(2)  # Only id available from URL; use for both
 
                     # Try to get event name from link text
                     name = link.get_text(strip=True) or "Unknown"
@@ -152,7 +152,8 @@ class BrowserEventsScraper:
 
                     events.append(
                         EventSummary(
-                            event_id=event_id,
+                            mongo_event_id=url_id,
+                            event_id=url_id,
                             name=name[:200] if name else "Unknown",
                             artist_name=None,
                             subtitle=None,

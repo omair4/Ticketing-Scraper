@@ -80,6 +80,7 @@ def export_events_to_csv(result: EventsScrapeResult, output_dir: str = "./output
     filepath = output_path / filename
 
     fieldnames = [
+        "mongo_event_id",
         "event_id",
         "name",
         "artist_name",

@@ -28,7 +28,11 @@ class VenueInfo(BaseModel):
 class EventSummary(BaseModel):
     """Event listing data (from search/list pages)"""
 
-    event_id: str = Field(..., description="Event ID")
+    mongo_event_id: str = Field(..., description="Mongo document ID (id / _id)")
+    event_id: str = Field(
+        ...,
+        description="Showclix ID for pro events, shortEventId for community events",
+    )
     name: str = Field(..., description="Event name")
     artist_name: Optional[str] = Field(default=None, description="Artist/performer name")
     subtitle: Optional[str] = Field(default=None, description="Event subtitle/tour name")
@@ -41,7 +45,7 @@ class EventSummary(BaseModel):
     image_url: Optional[str] = Field(default=None, description="Event image URL")
     price_range: Optional[str] = Field(default=None, description="Price range e.g. '$5.00 – $99.95' or 'Free'")
 
-    @field_validator("name", "artist_name", "subtitle", "venue_name", "city", "category", "url", mode="before")
+    @field_validator("name", "artist_name", "subtitle", "venue_name", "city", "category", "url", "mongo_event_id", "event_id", mode="before")
     @classmethod
     def clean_string(cls, v):
         """Clean and normalize string fields"""

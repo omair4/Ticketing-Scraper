@@ -3,6 +3,8 @@ GraphQL-based event discovery scraper
 """
 
 import json
+import re
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -27,6 +29,19 @@ GRAPHQL_QUERIES_FILE = Path(__file__).parent / "graphql_queries.json"
 
 # Operations we use for event discovery (skip OrganizerEvents, GetOrganizerPublicProfile)
 EVENT_OPERATIONS = ("PublicProEvents", "Events")
+
+
+def _slugify(s: str) -> str:
+    """Lowercase, strip accents, replace non-alphanumeric with hyphens, collapse and strip."""
+    if s is None:
+        return ""
+    s = str(s).strip()
+    if not s:
+        return ""
+    normalized = unicodedata.normalize("NFKD", s)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    slug = re.sub(r"[^a-z0-9]+", "-", ascii_only.lower())
+    return slug.strip("-")
 
 
 def _date_range() -> Dict[str, str]:
@@ -140,8 +155,8 @@ class GraphQLEventsScraper:
             }
             async for item, ev_type in self._paginate(q, vars_base, "publicProEvents", "pro"):
                 e = self._parse_event_item(item, city="", event_type=ev_type)
-                if e and e.event_id not in seen_ids:
-                    seen_ids.add(e.event_id)
+                if e and e.mongo_event_id not in seen_ids:
+                    seen_ids.add(e.mongo_event_id)
                     result.events.append(e)
 
         # Events (community)
@@ -156,8 +171,8 @@ class GraphQLEventsScraper:
             }
             async for item, ev_type in self._paginate(q, vars_base, "events", "community"):
                 e = self._parse_event_item(item, city="", event_type=ev_type)
-                if e and e.event_id not in seen_ids:
-                    seen_ids.add(e.event_id)
+                if e and e.mongo_event_id not in seen_ids:
+                    seen_ids.add(e.mongo_event_id)
                     result.events.append(e)
 
     async def _fetch_per_city(
@@ -188,8 +203,8 @@ class GraphQLEventsScraper:
                 }
                 async for item, ev_type in self._paginate(q, vars_base, "publicProEvents", "pro"):
                     e = self._parse_event_item(item, city=city_slug, event_type=ev_type)
-                    if e and e.event_id not in seen_ids:
-                        seen_ids.add(e.event_id)
+                    if e and e.mongo_event_id not in seen_ids:
+                        seen_ids.add(e.mongo_event_id)
                         result.events.append(e)
 
             # Events: use city (EventCity enum)
@@ -203,8 +218,8 @@ class GraphQLEventsScraper:
                 }
                 async for item, ev_type in self._paginate(q, vars_base, "events", "community"):
                     e = self._parse_event_item(item, city=city_slug, event_type=ev_type)
-                    if e and e.event_id not in seen_ids:
-                        seen_ids.add(e.event_id)
+                    if e and e.mongo_event_id not in seen_ids:
+                        seen_ids.add(e.mongo_event_id)
                         result.events.append(e)
 
     async def _paginate(
@@ -236,11 +251,51 @@ class GraphQLEventsScraper:
             skip += len(items)
             logger.debug("graphql_paginate", op=op, skip=skip, total=total)
 
+    def _build_community_url(
+        self,
+        city_val: str,
+        category: str,
+        title: str,
+        short_event_id: str,
+    ) -> str:
+        """Build full community event URL: /events/{city}/community/{category}/{title-slug}/{shortEventId}."""
+        city_slug = _slugify(city_val) or "other"
+        category_slug = _slugify(category) or "other"
+        title_slug = _slugify(title) or "other"
+        path = f"/events/{city_slug}/community/{category_slug}/{title_slug}/{short_event_id}"
+        return f"{self.config.base_url.rstrip('/')}{path}"
+
+    def _build_pro_url(
+        self,
+        venue_city: str,
+        category: str,
+        venue_name: str,
+        artist_name: str,
+        mongo_event_id: str,
+    ) -> str:
+        """Build full pro event URL: /events/{city}/pro/{category|other}/{venue}/{artist}/{artist}/{eventId}."""
+        city_slug = _slugify(venue_city) or "other"
+        category_segment = _slugify(category).strip() if (category or "").strip() else "other"
+        if not category_segment:
+            category_segment = "other"
+        venue_slug = _slugify(venue_name) or "unknown"
+        artist_slug = _slugify(artist_name or "") or "unknown"
+        path = f"/events/{city_slug}/pro/{category_segment}/{venue_slug}/{artist_slug}/{artist_slug}/{mongo_event_id}"
+        return f"{self.config.base_url.rstrip('/')}{path}"
+
     def _parse_event_item(self, item: Dict[str, Any], city: str, event_type: str) -> Optional[EventSummary]:
         """Parse a single event item into EventSummary."""
-        event_id = item.get("id") or item.get("shortEventId") or item.get("_id") or ""
-        if not event_id:
+        mongo_event_id = item.get("id") or item.get("_id") or ""
+        if not mongo_event_id:
             return None
+
+        # event_id: pro = showclixId, community = shortEventId; fallback to mongo_event_id
+        if event_type == "pro":
+            showclix = item.get("showclixId")
+            event_id = str(showclix) if showclix is not None else str(mongo_event_id)
+        else:
+            short_id = item.get("shortEventId")
+            event_id = str(short_id) if short_id is not None else str(mongo_event_id)
 
         title = item.get("title") or item.get("name") or ""
         if not title:
@@ -264,11 +319,6 @@ class GraphQLEventsScraper:
         if isinstance(addr, dict):
             city_from_item = city_from_item or addr.get("city") or ""
         city_val = city or city_from_item or ""
-
-        # URL
-        url = item.get("url") or item.get("clientEventUrl") or item.get("path") or ""
-        if not url and city:
-            url = f"/events/{city}/{event_type}/{event_id}"
 
         # Date: Pro uses eventStart/eventDate, Community uses startDate
         start_date = item.get("startDate") or item.get("eventStart") or item.get("date") or item.get("eventDate")
@@ -303,17 +353,33 @@ class GraphQLEventsScraper:
             if mn is not None or mx is not None:
                 price_range = f"${mn or 0:.2f} – ${mx or 0:.2f}" if mx else f"${mn or 0:.2f}+"
 
+        # URL: build AdmitOne-style full URL (community vs pro)
+        category = item.get("category") or item.get("categorySlug") or ""
+        if event_type == "community":
+            url = self._build_community_url(city_val, category, title, event_id)
+        else:
+            venue_city = (item.get("venue") or {}).get("city") or city_val
+            primary_artist = artist_name or item.get("admitoneTitle") or ""
+            url = self._build_pro_url(
+                venue_city,
+                category,
+                venue_name or "Unknown",
+                primary_artist,
+                str(mongo_event_id),
+            )
+
         return EventSummary(
-            event_id=str(event_id),
+            mongo_event_id=str(mongo_event_id),
+            event_id=event_id,
             name=title,
             artist_name=artist_name,
             subtitle=item.get("subtitle") or item.get("tourName"),
             date=date_val,
             venue_name=venue_name or "Unknown",
             city=city_val or "Unknown",
-            category=item.get("category") or item.get("categorySlug") or "",
+            category=category,
             event_type=event_type,
-            url=url or f"/events/{event_id}",
+            url=url,
             image_url=image_url,
             price_range=price_range,
         )
