@@ -3,6 +3,7 @@ GraphQL API client for AdmitONE events
 """
 
 import json
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 import httpx
@@ -12,6 +13,9 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from config import ScraperConfig, DEFAULT_CONFIG
 
 logger = structlog.get_logger()
+
+# Temporary: log full responses to this file
+_GRAPHQL_RESPONSE_LOG = Path(__file__).parent / "graphql_response_log.json"
 
 
 class GraphQLClient:
@@ -64,6 +68,24 @@ class GraphQLClient:
                 response.raise_for_status()
 
                 data = response.json()
+
+                # Temporary: print and save full response for debugging
+                try:
+                    logger.info("graphql_raw_response", operation=operation_name, response=data)
+                    log_entries = []
+                    if _GRAPHQL_RESPONSE_LOG.exists():
+                        try:
+                            with open(_GRAPHQL_RESPONSE_LOG, "r", encoding="utf-8") as f:
+                                log_entries = json.load(f)
+                                if not isinstance(log_entries, list):
+                                    log_entries = []
+                        except json.JSONDecodeError:
+                            log_entries = []
+                    log_entries.append({"operationName": operation_name, "response": data})
+                    with open(_GRAPHQL_RESPONSE_LOG, "w", encoding="utf-8") as f:
+                        json.dump(log_entries, f, indent=2, ensure_ascii=False)
+                except Exception as log_err:
+                    logger.warning("graphql_response_log_failed", error=str(log_err))
 
                 if "errors" in data:
                     for err in data["errors"]:

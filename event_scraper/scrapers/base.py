@@ -179,14 +179,29 @@ class BaseScraper(ABC):
             if h1:
                 event_name = h1.get_text(strip=True)
                 result['event_name'] = event_name
-                
                 # Check for subtitle (first <p> after <h1>, may not be immediate sibling)
                 # Look for the next <p> element after h1
                 next_p = h1.find_next('p')
                 if next_p:
                     subtitle = next_p.get_text(strip=True)
-                    # Only use as subtitle if it's not empty and not too long (likely not a description)
-                    if subtitle and len(subtitle) < 200:  # Subtitle should be relatively short
+                    # Skip first <p> when it's a dialog/warning (e.g. obstructed view, confirmations)
+                    def _looks_like_dialog(text: str) -> bool:
+                        if not text:
+                            return True
+                        t = text.strip().upper()
+                        if t.startswith('WARNING') or t.startswith('ERROR') or t.startswith('CONFIRM'):
+                            return True
+                        lower = text.lower()
+                        if 'obstructed view' in lower or 'would you like to continue' in lower:
+                            return True
+                        return False
+                    use_as_subtitle = (
+                        subtitle
+                        and len(subtitle) < 200
+                        and not _looks_like_dialog(subtitle)
+                    )
+                    # Only use as subtitle if it's not empty, not too long, and not a dialog/warning
+                    if use_as_subtitle:
                         # Combine event name and subtitle
                         result['event_name'] = f"{event_name} - {subtitle}"
             
