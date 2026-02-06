@@ -43,7 +43,9 @@ class EventSummary(BaseModel):
     event_type: Literal["pro", "community"] = Field(..., description="Pro or community event")
     url: str = Field(..., description="Event page URL path or full URL")
     image_url: Optional[str] = Field(default=None, description="Event image URL")
-    price_range: Optional[str] = Field(default=None, description="Price range e.g. '$5.00 – $99.95' or 'Free'")
+    sales_open: Optional[str] = Field(default=None, description="Datetime string of when sales opened (pro events only)")
+    sold_out: Optional[bool] = Field(default=None, description="Whether event is sold out")
+    timezone: Optional[str] = Field(default=None, description="Event timezone e.g. 'America/Toronto'")
 
     @field_validator("name", "artist_name", "subtitle", "venue_name", "city", "category", "url", "mongo_event_id", "event_id", mode="before")
     @classmethod

@@ -92,7 +92,9 @@ def export_events_to_csv(result: EventsScrapeResult, output_dir: str = "./output
         "event_type",
         "url",
         "image_url",
-        "price_range",
+        "sales_open",
+        "sold_out",
+        "timezone",
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8") as f:

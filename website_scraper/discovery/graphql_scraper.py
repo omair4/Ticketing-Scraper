@@ -124,6 +124,10 @@ class GraphQLEventsScraper:
         result.pro_events = sum(1 for e in result.events if e.event_type == "pro")
         result.community_events = sum(1 for e in result.events if e.event_type == "community")
 
+        # Extract unique cities from actual events
+        unique_cities = sorted(set(e.city for e in result.events if e.city))
+        result.cities_covered = unique_cities
+
         logger.info(
             "graphql_fetch_complete",
             total=result.total_events,
@@ -345,13 +349,12 @@ class GraphQLEventsScraper:
         elif not image_url:
             image_url = item.get("coverImage") if isinstance(item.get("coverImage"), str) else None
 
-        # Price: feesRange.min/max or ticketRange
-        price_range = item.get("ticketRange") or item.get("priceRange") or item.get("priceSummary")
-        if not price_range and isinstance(item.get("feesRange"), dict):
-            fr = item["feesRange"]
-            mn, mx = fr.get("min"), fr.get("max")
-            if mn is not None or mx is not None:
-                price_range = f"${mn or 0:.2f} – ${mx or 0:.2f}" if mx else f"${mn or 0:.2f}+"
+        # Sales/sold-out/timezone
+        sales_open = item.get("salesOpen")  # String datetime, pro events only
+        sold_out = item.get("soldOut")  # Boolean, pro events
+        if sold_out is None and isinstance(item.get("feesRange"), dict):
+            sold_out = item["feesRange"].get("soldOut")  # Community events
+        timezone = item.get("timezone")  # String
 
         # URL: build AdmitOne-style full URL (community vs pro)
         category = item.get("category") or item.get("categorySlug") or ""
@@ -381,5 +384,7 @@ class GraphQLEventsScraper:
             event_type=event_type,
             url=url,
             image_url=image_url,
-            price_range=price_range,
+            sales_open=sales_open,
+            sold_out=sold_out,
+            timezone=timezone,
         )

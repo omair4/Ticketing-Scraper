@@ -89,6 +89,10 @@ class BrowserEventsScraper:
         result.pro_events = sum(1 for e in result.events if e.event_type == "pro")
         result.community_events = sum(1 for e in result.events if e.event_type == "community")
 
+        # Extract unique cities from actual events
+        unique_cities = sorted(set(e.city for e in result.events if e.city))
+        result.cities_covered = unique_cities
+
         logger.info(
             "browser_scrape_complete",
             total=result.total_events,
@@ -164,7 +168,6 @@ class BrowserEventsScraper:
                             event_type=ev_type,
                             url=href,
                             image_url=None,
-                            price_range=None,
                         )
                     )
 
