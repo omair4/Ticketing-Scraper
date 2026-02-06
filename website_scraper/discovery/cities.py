@@ -72,6 +72,7 @@ KNOWN_CITIES = [
 ]
 
 # Slug (URL) -> EventCity enum value (title case). Events query requires EventCity enum.
+# Only includes cities that are valid EventCity enum values (verified via GraphQL API)
 CITY_SLUG_TO_EVENT_CITY: dict[str, str] = {
     "toronto": "Toronto",
     "calgary": "Calgary",
@@ -81,9 +82,9 @@ CITY_SLUG_TO_EVENT_CITY: dict[str, str] = {
     "edmonton": "Edmonton",
     "ottawa": "Ottawa",
     "winnipeg": "Winnipeg",
-    "south-brisbane": "South Brisbane",
-    "norwood": "Norwood",
-    "st-catharines": "St Catharines",
+    # Removed: "south-brisbane" (not a valid EventCity enum - causes 422)
+    # Removed: "norwood" (not a valid EventCity enum - causes 422)
+    # Note: "st-catharines" removed as it's not verified - add back if needed
 }
 
 # Canada geographic center (for Canada-wide radius queries)

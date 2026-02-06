@@ -212,19 +212,28 @@ class GraphQLEventsScraper:
                         result.events.append(e)
 
             # Events: use city (EventCity enum)
+            # Skip if city is not in mapping - Events query requires valid EventCity enum
             if "Events" in queries and event_type in (None, "community"):
-                q = queries["Events"]
-                vars_base = {
-                    "city": event_city,
-                    "orderBy": {"field": "start_date", "sort": 1},
-                    "startDateRange": dr,
-                    "take": PAGE_SIZE,
-                }
-                async for item, ev_type in self._paginate(q, vars_base, "events", "community"):
-                    e = self._parse_event_item(item, city=city_slug, event_type=ev_type)
-                    if e and e.mongo_event_id not in seen_ids:
-                        seen_ids.add(e.mongo_event_id)
-                        result.events.append(e)
+                # Only query Events for cities that have explicit EventCity enum mapping
+                if city_slug not in event_city_map:
+                    logger.debug(
+                        "skipping_events_query",
+                        city_slug=city_slug,
+                        reason="Not a valid EventCity enum value",
+                    )
+                else:
+                    q = queries["Events"]
+                    vars_base = {
+                        "city": event_city,
+                        "orderBy": {"field": "start_date", "sort": 1},
+                        "startDateRange": dr,
+                        "take": PAGE_SIZE,
+                    }
+                    async for item, ev_type in self._paginate(q, vars_base, "events", "community"):
+                        e = self._parse_event_item(item, city=city_slug, event_type=ev_type)
+                        if e and e.mongo_event_id not in seen_ids:
+                            seen_ids.add(e.mongo_event_id)
+                            result.events.append(e)
 
     async def _paginate(
         self,
@@ -239,7 +248,25 @@ class GraphQLEventsScraper:
         skip = 0
         while True:
             vars_page = {**vars_base, "skip": skip}
-            data = await self.client.query(op, query_str, vars_page)
+            try:
+                data = await self.client.query(op, query_str, vars_page)
+            except Exception as e:
+                # Handle 422 errors gracefully - invalid enum values, etc.
+                error_str = str(e)
+                is_422 = (
+                    "422" in error_str
+                    or "Unprocessable Entity" in error_str
+                    or (hasattr(e, "response") and hasattr(e.response, "status_code") and e.response.status_code == 422)
+                )
+                if is_422:
+                    logger.warning(
+                        "graphql_paginate_422",
+                        operation=op,
+                        variables=vars_page,
+                        error=error_str,
+                    )
+                    break  # Stop pagination for this query
+                raise  # Re-raise other exceptions
             if not data:
                 break
             blob = data.get(data_key)
