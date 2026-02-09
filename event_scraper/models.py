@@ -191,6 +191,12 @@ class ScrapeResult(BaseModel):
     min_price: Optional[Decimal] = None
     max_price: Optional[Decimal] = None
     
+    # External redirect
+    external_redirect_url: Optional[str] = Field(
+        default=None,
+        description="External ticket URL when event redirects to third-party vendor"
+    )
+
     # Errors/warnings
     errors: List[str] = Field(default_factory=list)
     warnings: List[str] = Field(default_factory=list)

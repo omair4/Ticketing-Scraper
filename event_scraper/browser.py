@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 import structlog
 
 from playwright.async_api import async_playwright, Page, Browser, BrowserContext, Response
-from config import ScraperConfig, BUTTON_SELECTORS, DEFAULT_CONFIG
+from config import ScraperConfig, BUTTON_SELECTORS, DEFAULT_CONFIG, is_admitone_domain
 
 logger = structlog.get_logger()
 
@@ -49,7 +49,7 @@ class CapturedResponse:
         return 'application/json' in self.content_type or 'text/json' in self.content_type
 
 
-@dataclass  
+@dataclass
 class NavigationResult:
     """Result of browser navigation"""
     success: bool
@@ -58,6 +58,8 @@ class NavigationResult:
     page_html: str = ""
     error: Optional[str] = None
     scenario_detected: Optional[str] = None
+    initial_page_html: str = ""
+    external_redirect_url: str = ""
 
 
 class BrowserAutomation:
@@ -227,7 +229,10 @@ class BrowserAutomation:
                 logger.debug("networkidle_timeout", msg="Continuing anyway - page may have ongoing requests")
             
             await asyncio.sleep(self.config.page_load_delay / 1000)
-            
+
+            # Capture initial page HTML before clicking Buy Now (for external redirect scenario)
+            initial_page_html = await self.page.content()
+
             # Step 2: Click first "Buy Now" or "Get Tickets" button
             logger.info("attempting_to_click_buy_button")
             
@@ -258,61 +263,101 @@ class BrowserAutomation:
                     self.page = new_page
                     # Set up response capture on new page
                     self.page.on('response', self._on_response)
-                    
+
                     # Wait for checkout page to load
                     await self.page.wait_for_load_state('domcontentloaded', timeout=15000)
                     await asyncio.sleep(2)
-                    
+
+                    # Check if new tab landed on an external domain
+                    if not is_admitone_domain(self.page.url):
+                        logger.info("external_redirect_detected_new_tab", url=self.page.url)
+                        return NavigationResult(
+                            success=True,
+                            current_url=self.page.url,
+                            captured_responses=self.captured_responses.copy(),
+                            page_html=await self.page.content(),
+                            scenario_detected='external_redirect',
+                            initial_page_html=initial_page_html,
+                            external_redirect_url=self.page.url,
+                        )
+
                     # Wait for GraphQL request to complete
                     try:
                         await self.page.wait_for_load_state('networkidle', timeout=20000)
                     except:
                         logger.debug("networkidle_timeout_on_checkout", msg="Continuing anyway")
-                    
+
                     # Give additional time for GraphQL API calls
                     await asyncio.sleep(3)
-                    
+
+                    # Check again after redirects settled
+                    if not is_admitone_domain(self.page.url):
+                        logger.info("external_redirect_detected_new_tab_after_load", url=self.page.url)
+                        return NavigationResult(
+                            success=True,
+                            current_url=self.page.url,
+                            captured_responses=self.captured_responses.copy(),
+                            page_html=await self.page.content(),
+                            scenario_detected='external_redirect',
+                            initial_page_html=initial_page_html,
+                            external_redirect_url=self.page.url,
+                        )
+
                     # Detect scenario
                     scenario = self._detect_scenario()
                     html = await self.page.content()
-                    
+
                     return NavigationResult(
                         success=True,
                         current_url=self.page.url,
                         captured_responses=self.captured_responses.copy(),
                         page_html=html,
-                        scenario_detected=scenario
+                        scenario_detected=scenario,
+                        initial_page_html=initial_page_html,
                     )
             except asyncio.TimeoutError:
                 # No new page opened, check if we navigated to checkout.admitone.com in same page
                 current_url = self.page.url
-                
+
                 if 'checkout.admitone.com' in current_url:
                     logger.info("navigated_to_checkout", scenario="graphql_checkout_flow", url=current_url)
-                    
+
                     # Wait for checkout page to load
                     await self.page.wait_for_load_state('domcontentloaded', timeout=15000)
                     await asyncio.sleep(2)
-                    
+
                     # Wait for GraphQL request to complete
                     try:
                         await self.page.wait_for_load_state('networkidle', timeout=20000)
                     except:
                         logger.debug("networkidle_timeout_on_checkout", msg="Continuing anyway")
-                    
+
                     # Give additional time for GraphQL API calls
                     await asyncio.sleep(3)
-                    
+
                     # Detect scenario
                     scenario = self._detect_scenario()
                     html = await self.page.content()
-                    
+
                     return NavigationResult(
                         success=True,
                         current_url=self.page.url,
                         captured_responses=self.captured_responses.copy(),
                         page_html=html,
-                        scenario_detected=scenario
+                        scenario_detected=scenario,
+                        initial_page_html=initial_page_html,
+                    )
+                elif not is_admitone_domain(current_url):
+                    # Same-tab redirect to external domain
+                    logger.info("external_redirect_detected_same_tab", url=current_url)
+                    return NavigationResult(
+                        success=True,
+                        current_url=current_url,
+                        captured_responses=self.captured_responses.copy(),
+                        page_html=await self.page.content(),
+                        scenario_detected='external_redirect',
+                        initial_page_html=initial_page_html,
+                        external_redirect_url=current_url,
                     )
                 else:
                     # No new page opened, continue with existing flow
@@ -377,11 +422,32 @@ class BrowserAutomation:
                     # Wait for page to fully load
                     await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
                     await asyncio.sleep(2)
-                    
+
                     # Try clicking Buy Now again on this page
                     await self._click_buy_button()
                     await asyncio.sleep(3)
                     await self.page.wait_for_load_state('networkidle', timeout=self.config.navigation_timeout)
+                elif 'tickets.admitonelive.com' in current_url:
+                    # tickets.admitonelive.com may redirect to an external vendor
+                    logger.info("detected_tickets_admitonelive", url=current_url)
+                    # Wait for redirect chain to complete
+                    await asyncio.sleep(5)
+                    try:
+                        await self.page.wait_for_load_state('networkidle', timeout=15000)
+                    except:
+                        pass
+                    final_url = self.page.url
+                    if not is_admitone_domain(final_url):
+                        logger.info("external_redirect_via_admitonelive", url=final_url)
+                        return NavigationResult(
+                            success=True,
+                            current_url=final_url,
+                            captured_responses=self.captured_responses.copy(),
+                            page_html=await self.page.content(),
+                            scenario_detected='external_redirect',
+                            initial_page_html=initial_page_html,
+                            external_redirect_url=final_url,
+                        )
                 else:
                     # Try clicking Select Seats in case it's already visible
                     select_seats_clicked = await self._try_click_select_seats()
@@ -414,13 +480,15 @@ class BrowserAutomation:
             
             # Detect which scenario we're in based on captured responses
             scenario = self._detect_scenario()
-            
+
             return NavigationResult(
                 success=True,
                 current_url=self.page.url,
                 captured_responses=self.captured_responses.copy(),
                 page_html=html,
-                scenario_detected=scenario
+                scenario_detected=scenario,
+                initial_page_html=initial_page_html,
+                external_redirect_url=self.page.url if scenario == 'external_redirect' else '',
             )
             
         except Exception as e:
@@ -817,7 +885,11 @@ class BrowserAutomation:
             has_direct_api = any('tickets.admitone.com' in r.url and ('seating-plan/availability' in r.url or '/events/' in r.url) for r in self.captured_responses)
             if not (has_seatsio_net or has_seatsio_api) and not has_embed_event and not has_direct_api:
                 return 'graphql'
-        
+
+        # Catch-all: if we ended up on an external domain, it's an external redirect
+        if self.page and not is_admitone_domain(self.page.url):
+            return 'external_redirect'
+
         return 'unknown'
     
     def get_responses_by_pattern(self, pattern: str) -> list[CapturedResponse]:

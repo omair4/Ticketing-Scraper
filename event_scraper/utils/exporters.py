@@ -187,7 +187,49 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
     return str(filepath)
 
 
-def export_results(result: ScrapeResult, output_dir: str = "./output", 
+def export_external_redirect(result: ScrapeResult, output_dir: str = "./output") -> str:
+    """
+    Export external redirect result to JSON file.
+
+    Args:
+        result: ScrapeResult with external_redirect_url set
+        output_dir: Directory for output files
+
+    Returns:
+        Path to created file
+    """
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    filename = generate_filename(result.event.event_name, "json")
+    filepath = output_path / filename
+
+    data = {
+        "scenario_type": result.scenario_type,
+        "external_ticket_url": result.external_redirect_url,
+        "event": {
+            "event_id": result.event.event_id,
+            "event_name": result.event.event_name,
+            "venue_name": result.event.venue_name,
+            "venue_address": result.event.venue_address,
+            "event_date": result.event.event_date,
+            "event_url": result.event.event_url,
+        },
+        "scraped_at": result.scraped_at.isoformat(),
+        "warnings": result.warnings,
+    }
+
+    # Remove None values
+    data["event"] = {k: v for k, v in data["event"].items() if v is not None}
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(data, f, indent=2, ensure_ascii=False, default=str)
+
+    logger.info("exported_external_redirect", filepath=str(filepath))
+    return str(filepath)
+
+
+def export_results(result: ScrapeResult, output_dir: str = "./output",
                    formats: list[str] = None) -> dict[str, str]:
     """
     Export results to multiple formats.
@@ -224,6 +266,15 @@ def print_summary(result: ScrapeResult):
     print(f"Date: {result.event.event_date or 'N/A'}")
     print(f"Scenario: {result.scenario_type}")
     print("-"*60)
+    if result.scenario_type == 'external_redirect':
+        print(f"External Ticket URL: {result.external_redirect_url}")
+        print("-"*60)
+        if result.warnings:
+            print(f"Warnings ({len(result.warnings)}):")
+            for warn in result.warnings:
+                print(f"  - {warn}")
+        print("="*60 + "\n")
+        return
     if result.seats:
         print(f"Total Seats Found: {result.total_seats_found}")
         print(f"Available Seats: {result.available_seats_count}")

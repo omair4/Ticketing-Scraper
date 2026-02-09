@@ -43,7 +43,7 @@ logging.basicConfig(level=logging.INFO, format='%(message)s')
 from config import ScraperConfig, DEFAULT_CONFIG
 from browser import BrowserAutomation
 from scrapers import get_scraper_for_scenario
-from utils.exporters import export_results, print_summary
+from utils.exporters import export_results, export_external_redirect, print_summary
 from models import ScrapeResult, EventInfo
 
 logger = structlog.get_logger()
@@ -109,6 +109,20 @@ async def scrape_event(
         scenario = nav_result.scenario_detected or "unknown"
         logger.info("step_2", description=f"Using {scenario} scraper...")
 
+        # External redirect gets special handling (extra params)
+        if scenario == 'external_redirect':
+            from scrapers.external_redirect_scraper import ExternalRedirectScraper
+            scraper = ExternalRedirectScraper()
+            result = await scraper.extract(
+                captured_responses=nav_result.captured_responses,
+                page_html=nav_result.page_html,
+                event_url=event_url,
+                event_info_override=event_info_override,
+                external_redirect_url=nav_result.external_redirect_url,
+                initial_page_html=nav_result.initial_page_html,
+            )
+            return result
+
         scraper = get_scraper_for_scenario(scenario)
 
         # Step 3: Extract seat data
@@ -166,7 +180,14 @@ Examples:
         
         # Print summary
         print_summary(result)
-        
+
+        # Handle external redirect separately
+        if result.scenario_type == 'external_redirect':
+            filepath = export_external_redirect(result, args.output_dir)
+            print("\nExported files:")
+            print(f"  JSON: {filepath}")
+            return 0
+
         # Export results if we have any data (seats, ticket categories, or resale listings)
         has_data = result.seats or result.ticket_categories or result.resale_listings
         if has_data:
@@ -178,7 +199,7 @@ Examples:
             print("\nNo data found to export.")
             if result.errors:
                 print("Check errors above for details.")
-        
+
         # Return exit code based on success
         return 0 if has_data else 1
         

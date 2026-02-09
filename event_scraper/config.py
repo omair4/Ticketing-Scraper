@@ -52,6 +52,23 @@ class APIPatterns:
     EVENT_DATA = "/events/"
 
 
+ADMITONE_DOMAINS = [
+    'admitone.com',        # main site + subdomains (tickets., checkout., graphql.)
+    'admitonelive.com',    # embed., tickets. subdomains
+    'seatsio.net',         # seats.io CDN (part of internal flow)
+]
+
+
+def is_admitone_domain(url: str) -> bool:
+    """Check if a URL belongs to an AdmitONE-related domain."""
+    from urllib.parse import urlparse
+    try:
+        hostname = urlparse(url).hostname or ''
+        return any(hostname == d or hostname.endswith('.' + d) for d in ADMITONE_DOMAINS)
+    except Exception:
+        return False
+
+
 # Button selectors for navigation
 BUTTON_SELECTORS = {
     # Primary buy buttons
