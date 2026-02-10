@@ -9,6 +9,60 @@ import structlog
 logger = structlog.get_logger()
 
 
+def _bruteforce_offset_decode(raw_bytes: bytes, source: str = "") -> Optional[tuple[str, int]]:
+    """
+    Try all 256 byte offsets to decode raw bytes into valid JSON.
+
+    Uses smart prediction first: computes which offsets would make the
+    first byte decode to '{' (0x7B) or '[' (0x5B), then falls back to
+    iterating all 256 offsets.
+
+    Args:
+        raw_bytes: Raw bytes (already converted from hex or base64)
+        source: Label for logging (e.g. "hex", "base64")
+
+    Returns:
+        Tuple of (decoded_json_str, offset) on success, None on failure
+    """
+    if not raw_bytes:
+        return None
+
+    first_byte = raw_bytes[0]
+
+    # Smart prediction: try offsets that would make the first byte
+    # decode to '{' (0x7B) or '[' (0x5B) — the only valid JSON start chars
+    priority_offsets = [
+        (first_byte - 0x7B) % 256,  # offset that yields '{'
+        (first_byte - 0x5B) % 256,  # offset that yields '['
+    ]
+
+    # Deduplicate while preserving order
+    seen = set()
+    candidates = []
+    for o in priority_offsets:
+        if o not in seen:
+            seen.add(o)
+            candidates.append(o)
+
+    # Full fallback: all 256 offsets (skip ones already tried)
+    for o in range(256):
+        if o not in seen:
+            candidates.append(o)
+
+    for offset in candidates:
+        try:
+            decoded_bytes = bytes((b - offset) % 256 for b in raw_bytes)
+            decoded_str = decoded_bytes.decode('utf-8')
+            json.loads(decoded_str)
+            logger.info("bruteforce_decode_success", offset=offset, source=source)
+            return (decoded_str, offset)
+        except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
+            continue
+
+    logger.warning("bruteforce_decode_failed", source=source, data_length=len(raw_bytes))
+    return None
+
+
 def decode_seatsio_response(response_text: str) -> Optional[str]:
     """
     Decode seats.io object-statuses response.
@@ -36,32 +90,27 @@ def decode_seatsio_response(response_text: str) -> Optional[str]:
     except json.JSONDecodeError:
         pass
     
-    # Try 2: Base64 decode first, then apply byte offset directly
+    # Try 2: Base64 decode first, then bruteforce byte offset
     try:
-        # Check if it looks like base64 (contains +, /, =)
         if any(c in response_text for c in '+/=') or len(response_text) > 1000:
-            # Decode base64 to get binary data
             binary_data = base64.b64decode(response_text)
-            # Apply offset directly to bytes (subtract 41 from each byte)
-            decoded_bytes = bytes((b - 41) % 256 for b in binary_data)
-            # Try to decode as UTF-8
-            decoded = decoded_bytes.decode('utf-8')
-            # Verify it's JSON
-            json.loads(decoded)
-            return decoded
-    except Exception as e:
+            result = _bruteforce_offset_decode(binary_data, source="base64")
+            if result:
+                return result[0]
+    except Exception:
         pass
-    
+
     # Try 3: Direct hex offset decode (if it's already hex)
-    if all(c in '0123456789abcdefABCDEF' for c in response_text.strip()):
+    cleaned = response_text.strip()
+    if all(c in '0123456789abcdefABCDEF' for c in cleaned):
         try:
-            decoded = decode_hex_offset(response_text.strip(), offset=41)
-            if decoded:
-                json.loads(decoded)  # Verify
-                return decoded
-        except:
+            encoded_bytes = bytes.fromhex(cleaned)
+            result = _bruteforce_offset_decode(encoded_bytes, source="hex")
+            if result:
+                return result[0]
+        except Exception:
             pass
-    
+
     return None
 
 
@@ -88,31 +137,28 @@ def decode_charts_response(response_text: str) -> Optional[str]:
     except json.JSONDecodeError:
         pass
     
-    # Try 2: Hex offset decode with offset 0x29 (41)
+    # Try 2: Hex offset decode with bruteforce
     cleaned = response_text.strip()
     if all(c in '0123456789abcdefABCDEF' for c in cleaned):
         try:
-            decoded = decode_hex_offset(cleaned, offset=0x29)  # 0x29 = 41
-            if decoded:
-                # Verify it's valid JSON
-                json.loads(decoded)
-                return decoded
+            encoded_bytes = bytes.fromhex(cleaned)
+            result = _bruteforce_offset_decode(encoded_bytes, source="hex")
+            if result:
+                return result[0]
         except Exception as e:
             logger.debug("charts_hex_decode_failed", error=str(e))
-            pass
-    
-    # Try 3: Use the same logic as seatsio_response (base64 + offset)
+
+    # Try 3: Base64 decode + bruteforce byte offset
     try:
         import base64
         if any(c in response_text for c in '+/=') or len(response_text) > 1000:
             binary_data = base64.b64decode(response_text)
-            decoded_bytes = bytes((b - 0x29) % 256 for b in binary_data)
-            decoded = decoded_bytes.decode('utf-8')
-            json.loads(decoded)  # Verify
-            return decoded
+            result = _bruteforce_offset_decode(binary_data, source="base64")
+            if result:
+                return result[0]
     except Exception:
         pass
-    
+
     return None
 
 
@@ -164,25 +210,14 @@ def try_decode_response(response_text: str) -> tuple[str, str]:
     # Check if it looks like hex (all hex characters)
     cleaned = response_text.strip()
     if all(c in '0123456789abcdefABCDEF' for c in cleaned):
-        # Try hex offset decoding with common offsets
-        for offset in [41, 0, 32, 64]:
-            try:
-                decoded = decode_hex_offset(cleaned, offset)
-                # Validate it's JSON
-                json.loads(decoded)
-                logger.info("hex_decode_success", offset=offset)
-                return decoded, f"hex_offset_{offset}"
-            except (json.JSONDecodeError, ValueError):
-                continue
-    
-    # Try direct byte interpretation
-    try:
-        decoded = bytes.fromhex(cleaned).decode('utf-8')
-        json.loads(decoded)
-        return decoded, "hex_utf8"
-    except:
-        pass
-    
+        try:
+            encoded_bytes = bytes.fromhex(cleaned)
+            result = _bruteforce_offset_decode(encoded_bytes, source="hex")
+            if result:
+                return result[0], f"hex_offset_{result[1]}"
+        except Exception:
+            pass
+
     return response_text, "unknown"
 
 

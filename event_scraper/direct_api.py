@@ -22,7 +22,7 @@ from typing import Optional, Dict, Any
 import structlog
 
 from models import Seat, SeatStatus, ScrapeResult, EventInfo, TicketCategory, ResaleListing
-from utils.decoder import decode_hex_offset
+from utils.decoder import decode_seatsio_response
 from utils.exporters import export_results, print_summary
 
 # Configure logging
@@ -121,13 +121,11 @@ class DirectAPICaller:
                 response.raise_for_status()
                 
                 raw_body = response.text
-                
-                # Try to decode if hex-encoded
-                try:
-                    seat_data = json.loads(raw_body)
-                except json.JSONDecodeError:
-                    decoded = decode_hex_offset(raw_body, offset=41)
-                    seat_data = json.loads(decoded)
+
+                decoded = decode_seatsio_response(raw_body)
+                if not decoded:
+                    raise ValueError("Could not decode seatsio response")
+                seat_data = json.loads(decoded)
                 
                 # Parse seats
                 if isinstance(seat_data, list):
