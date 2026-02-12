@@ -55,38 +55,44 @@ class SeatsIOScraper(BaseScraper):
         # Step 3: Extract seatsio config from page HTML (workspaceKey, event key)
         seatsio_config = self._extract_seatsio_config(page_html)
 
-        # Step 4: Extract chart structure from charts/published response
+        # Step 4: Extract rendering-info (category definitions and seat→category mappings)
+        rendering_info = self._extract_rendering_info(captured_responses)
+        if not rendering_info:
+            self.add_warning("No rendering-info found — category assignment may be incomplete")
+
+        # Step 5: Extract chart structure from charts/published response
         chart_data = self._extract_chart_data(captured_responses)
 
-        # Step 5: Extract availability from object-statuses response
+        # Step 6: Extract availability from object-statuses response
         availability = self._extract_availability(captured_responses)
 
-        # Step 6: Build seats by combining chart + availability + pricing
+        # Step 7: Build seats by combining rendering-info + chart + availability + pricing
         seats = []
-        ga_categories = []
+        ticket_categories = []
 
         if chart_data:
-            seats, ga_categories = self._build_seats(chart_data, availability, pricing)
+            seats, ticket_categories = self._build_seats(chart_data, availability, pricing, rendering_info)
             # When chart has no rows (e.g. table/booth layout), build seats from object-statuses
             if not seats and availability:
                 seats = self._build_seats_from_object_statuses(
                     captured_responses, pricing,
                     chart_data.get('category_map', {}),
+                    rendering_info,
                 )
         else:
             self.add_warning("No chart data found — trying fallback extraction from availability data")
             seats = self._build_seats_from_availability(availability, pricing)
 
-        # Step 7: Extract additional GA areas from page HTML
-        html_ga_categories = self._extract_ga_categories_from_html(page_html, pricing)
+        # Step 8: Extract additional GA areas from page HTML
+        html_ga_categories = self._extract_ga_categories_from_html(page_html, pricing, rendering_info)
         if html_ga_categories:
             # Merge, avoiding duplicates
-            existing_names = {c.category_name for c in ga_categories}
+            existing_names = {c.category_name for c in ticket_categories}
             for cat in html_ga_categories:
                 if cat.category_name not in existing_names:
-                    ga_categories.append(cat)
+                    ticket_categories.append(cat)
 
-        if not seats and not ga_categories:
+        if not seats and not ticket_categories:
             self.add_error("No seats or categories extracted")
 
         # Build API URLs for output
@@ -95,7 +101,7 @@ class SeatsIOScraper(BaseScraper):
         return self.create_result(
             event_info,
             seats=seats,
-            ticket_categories=ga_categories,
+            ticket_categories=ticket_categories,
             api_urls=api_urls,
             scrape_method="browser",
         )
@@ -187,6 +193,52 @@ class SeatsIOScraper(BaseScraper):
 
         return config
 
+    def _extract_rendering_info(self, responses: list[CapturedResponse]) -> Optional[Dict[str, Any]]:
+        """
+        Extract rendering-info from seats.io API (plain JSON, not encoded).
+
+        Returns:
+            Dict with 'categories', 'objectCategories', 'forSaleConfigsPerEvent'
+        """
+        rendering_response = self.find_response_by_pattern(responses, 'rendering-info')
+        if not rendering_response or not rendering_response.body:
+            logger.debug("no_rendering_info_found")
+            return None
+
+        try:
+            # rendering-info is plain JSON (not hex-encoded)
+            rendering_data = json.loads(rendering_response.body)
+
+            categories = rendering_data.get('categories', [])
+            object_categories = rendering_data.get('objectCategories', {})
+            for_sale_configs = rendering_data.get('forSaleConfigsPerEvent', {})
+
+            # Build category lookup by key
+            category_by_key = {}
+            for cat in categories:
+                if isinstance(cat, dict) and 'key' in cat:
+                    category_by_key[cat['key']] = {
+                        'label': cat.get('label', ''),
+                        'color': cat.get('color', ''),
+                        'accessible': cat.get('accessible', False),
+                    }
+
+            logger.info("extracted_rendering_info",
+                       categories=len(categories),
+                       object_mappings=len(object_categories),
+                       category_by_key_count=len(category_by_key))
+
+            return {
+                'categories': categories,
+                'category_by_key': category_by_key,
+                'objectCategories': object_categories,
+                'forSaleConfigsPerEvent': for_sale_configs,
+            }
+
+        except Exception as e:
+            logger.error("rendering_info_extraction_failed", error=str(e))
+            return None
+
     def _extract_chart_data(self, responses: list[CapturedResponse]) -> Optional[Dict[str, Any]]:
         """
         Extract chart data from seats.io charts/published API.
@@ -210,7 +262,6 @@ class SeatsIOScraper(BaseScraper):
 
             chart_data = json.loads(decoded_json)
             sub_chart = chart_data.get('subChart', {})
-            rows = sub_chart.get('rows', [])
 
             # Extract category map
             category_map = {}
@@ -223,44 +274,62 @@ class SeatsIOScraper(BaseScraper):
             # Extract seats from rows
             chart_seats = []
 
-            for row in rows:
-                if not isinstance(row, dict):
+            # Check both top-level rows and section subChart rows
+            rows = sub_chart.get('rows', [])
+            sections = sub_chart.get('sections', [])
+
+            # Helper function to extract seats from rows
+            def extract_seats_from_rows(rows, section_label_override=None):
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+
+                    row_label = row.get('label', '')
+                    section_label = section_label_override or row.get('sectionLabel', '')
+                    seats = row.get('seats', [])
+
+                    for seat in seats:
+                        if not isinstance(seat, dict):
+                            continue
+
+                        uuid = seat.get('uuid', '')
+                        if not uuid:
+                            continue
+
+                        x_val = seat.get('x')
+                        y_val = seat.get('y')
+                        if x_val is not None:
+                            x_val = float(x_val)
+                        if y_val is not None:
+                            y_val = float(y_val)
+
+                        semi_ambulatory = bool(seat.get('semiAmbulatorySeat', False))
+                        hearing_impaired = bool(seat.get('hearingImpaired', False))
+                        sign_lang = bool(seat.get('signLanguageInterpretation', False))
+                        ada = semi_ambulatory or hearing_impaired or sign_lang
+
+                        chart_seats.append({
+                            'section': section_label or 'Unknown',
+                            'row': row_label or 'Unknown',
+                            'seat_label': seat.get('label', ''),
+                            'categoryKey': str(seat.get('categoryKey')) if seat.get('categoryKey') is not None else None,
+                            'uuid': uuid,
+                            'x': x_val,
+                            'y': y_val,
+                            'ADA': ada,
+                        })
+
+            # Extract from top-level rows
+            extract_seats_from_rows(rows)
+
+            # Extract from section subCharts
+            for section in sections:
+                if not isinstance(section, dict):
                     continue
-
-                row_label = row.get('label', '')
-                section_label = row.get('sectionLabel', '')
-                seats = row.get('seats', [])
-
-                for seat in seats:
-                    if not isinstance(seat, dict):
-                        continue
-
-                    uuid = seat.get('uuid', '')
-                    if not uuid:
-                        continue
-
-                    x_val = seat.get('x')
-                    y_val = seat.get('y')
-                    if x_val is not None:
-                        x_val = float(x_val)
-                    if y_val is not None:
-                        y_val = float(y_val)
-
-                    semi_ambulatory = bool(seat.get('semiAmbulatorySeat', False))
-                    hearing_impaired = bool(seat.get('hearingImpaired', False))
-                    sign_lang = bool(seat.get('signLanguageInterpretation', False))
-                    ada = semi_ambulatory or hearing_impaired or sign_lang
-
-                    chart_seats.append({
-                        'section': section_label or 'Unknown',
-                        'row': row_label or 'Unknown',
-                        'seat_label': seat.get('label', ''),
-                        'categoryKey': str(seat.get('categoryKey')) if seat.get('categoryKey') is not None else None,
-                        'uuid': uuid,
-                        'x': x_val,
-                        'y': y_val,
-                        'ADA': ada,
-                    })
+                section_label = section.get('label', '')
+                section_sub_chart = section.get('subChart', {})
+                section_rows = section_sub_chart.get('rows', [])
+                extract_seats_from_rows(section_rows, section_label)
 
             # Extract GA areas
             ga_areas = []
@@ -325,13 +394,18 @@ class SeatsIOScraper(BaseScraper):
                 if not isinstance(seat_data, dict):
                     continue
 
-                uuid = seat_data.get('uuid') or seat_data.get('objectLabelOrUuid', '')
+                # Use objectLabelOrUuid as primary key (it's the label string like "Floor 101-A-1")
+                label = seat_data.get('objectLabelOrUuid') or seat_data.get('uuid', '')
                 status = seat_data.get('status', 'free')
 
-                if uuid:
-                    availability[uuid] = status
+                if label:
+                    availability[label] = status
 
             logger.info("extracted_availability", count=len(availability))
+            if availability:
+                logger.debug("availability_sample",
+                           sample_keys=list(availability.keys())[:5],
+                           sample_values=list(availability.values())[:5])
 
         except Exception as e:
             logger.error("availability_extraction_failed", error=str(e))
@@ -339,67 +413,219 @@ class SeatsIOScraper(BaseScraper):
         return availability
 
     def _build_seats(self, chart_data: Dict[str, Any], availability: Dict[str, str],
-                     pricing: Dict[str, Dict[str, Any]]) -> tuple[List[Seat], List[TicketCategory]]:
+                     pricing: Dict[str, Dict[str, Any]],
+                     rendering_info: Optional[Dict[str, Any]] = None) -> tuple[List[Seat], List[TicketCategory]]:
         """
-        Combine chart seats + availability + pricing into Seat and TicketCategory objects.
+        Combine rendering-info + chart seats + availability + pricing into Seat and TicketCategory objects.
+
+        Uses rendering-info for accurate category assignment:
+        1. Get seat label from chart (e.g., "Floor 101-A-10")
+        2. Look up category key: rendering_info['objectCategories'][seat_label] → category_key
+        3. Look up category info: rendering_info['category_by_key'][category_key] → {label, color, accessible}
+        4. Use category label for price lookup
         """
         seats = []
-        ga_categories = []
+        ticket_categories = []
         category_map = chart_data.get('category_map', {})
         chart_seats = chart_data.get('chart_seats', [])
         ga_areas = chart_data.get('ga_areas', [])
 
+        # Extract rendering-info lookups
+        object_categories = {}
+        category_by_key = {}
+        if rendering_info:
+            object_categories = rendering_info.get('objectCategories', {})
+            category_by_key = rendering_info.get('category_by_key', {})
+
         # Build seats from chart data
         for cs in chart_seats:
             uuid = cs.get('uuid')
+            seat_label = cs.get('seat_label', '')
             category_key = cs.get('categoryKey')
 
-            # Status
-            status = SeatStatus.UNKNOWN
-            if uuid and uuid in availability:
-                status = self.parse_seat_status(availability[uuid])
-            else:
-                status = SeatStatus.AVAILABLE
+            # Extract seat components for composite label building
+            section = cs.get('section', '')
+            row = cs.get('row', '')
 
-            # Price
-            price, label = self._get_price_for_category(category_key, category_map, pricing)
+            # Build composite labels for both status and category lookup
+            composite_labels = [
+                f"{section}-{row}-{seat_label}",    # "Floor 101-A-1" (hyphenated - BEST match per test)
+                f"{section} {row}-{seat_label}",    # "Floor 101 A-1" (spaced variant)
+                seat_label,                          # Just seat label as fallback
+            ]
+
+            # Lookup status using composite label (NOT uuid)
+            status = SeatStatus.AVAILABLE  # Default: seats not in object-statuses are available
+            matched_label = None
+            for label_variant in composite_labels:
+                if label_variant in availability:
+                    status = self.parse_seat_status(availability[label_variant])
+                    matched_label = label_variant
+                    logger.debug("status_matched", seat=label_variant, status=status.value)
+                    break
+
+            if not matched_label:
+                logger.debug("seat_not_in_availability",
+                           seat=f"{section}-{row}-{seat_label}",
+                           defaulted_to="available")
+
+            # NEW: Use rendering-info for category assignment (reuse composite_labels)
+            category_label = None
+            ada_accessible = None
+
+            # Try label variations for category lookup
+            lookup_label = None
+            for label_variant in composite_labels:
+                if label_variant in object_categories:
+                    lookup_label = label_variant
+                    break
+
+            if lookup_label:
+                category_key_from_rendering = object_categories[lookup_label]
+                if category_key_from_rendering in category_by_key:
+                    cat_info = category_by_key[category_key_from_rendering]
+                    category_label = cat_info.get('label')
+                    ada_accessible = cat_info.get('accessible')
+                    # Update category_key to use the one from rendering-info
+                    category_key = str(category_key_from_rendering)
+                    logger.debug("category_matched", seat=lookup_label, category=category_label)
+
+            # Fallback: use chart categoryKey and category_map
+            if not category_label and category_key:
+                category_label = category_map.get(category_key)
+
+            # Price lookup using category label (more reliable than category key)
+            price, ticket_label = self._get_price_for_category(
+                category_key, category_map, pricing, category_label
+            )
+
+            # Combine ADA info from rendering-info and chart
+            ada_flag = cs.get('ADA', False)
+            if ada_accessible is not None:
+                ada_flag = ada_flag or ada_accessible
 
             seat = Seat(
                 section=cs.get('section', 'Unknown'),
                 row=cs.get('row', 'Unknown'),
-                seat=cs.get('seat_label', '') or 'GA',
+                seat=seat_label or 'GA',
                 price=price,
                 status=status,
-                price_level=label or category_map.get(category_key, 'Unknown'),
+                price_level=category_label or ticket_label or category_map.get(category_key, 'Unknown'),
                 x=cs.get('x'),
                 y=cs.get('y'),
-                ada=cs.get('ADA'),
+                ada=ada_flag if ada_flag else None,
             )
             seats.append(seat)
 
-        # Build GA categories from chart GA areas
-        for ga in ga_areas:
-            category_key = ga.get('categoryKey')
-            ga_label = ga.get('label', 'General Admission')
-            price, ticket_label = self._get_price_for_category(category_key, category_map, pricing)
+        # Build ticket categories from rendering-info categories (not just GA areas)
+        ticket_categories = []
+        if rendering_info and category_by_key:
+            categories_list = rendering_info.get('categories', [])
 
-            # Check availability for this GA area
-            ga_uuid = ga.get('uuid', '')
-            ga_status = availability.get(ga_uuid, 'free')
-            is_sold_out = ga_status in ('booked', 'sold', 'taken')
+            for cat_def in categories_list:
+                if not isinstance(cat_def, dict):
+                    continue
 
-            ga_categories.append(TicketCategory(
-                category_name=ga_label,
-                category_id=category_key or ga_uuid,
-                price=price,
-                current_stock=ga.get('capacity'),
-                is_out_of_stock=is_sold_out,
-                group_name=category_map.get(category_key, ''),
-                ticket_type=ticket_label or 'Ticket',
-            ))
+                category_key = cat_def.get('key')
+                category_label = cat_def.get('label', '')
 
-        logger.info("built_seats", seat_count=len(seats), ga_count=len(ga_categories))
-        return seats, ga_categories
+                if not category_label:
+                    continue
+
+                # Get price for this category
+                price, ticket_label = self._get_price_for_category(
+                    str(category_key), category_map, pricing, category_label
+                )
+
+                # Determine capacity and availability
+                current_stock = None
+                is_sold_out = False
+
+                # Check if this is a GA category by looking for GA area with this category
+                matching_ga_area = None
+                for ga in ga_areas:
+                    ga_label = ga.get('label', '')
+                    # Look up GA area's category via objectCategories
+                    if ga_label in object_categories:
+                        ga_cat_key = object_categories[ga_label]
+                        if ga_cat_key == category_key:
+                            matching_ga_area = ga
+                            break
+
+                if matching_ga_area:
+                    # GA category - use capacity from GA area
+                    current_stock = matching_ga_area.get('capacity')
+                    ga_uuid = matching_ga_area.get('uuid', '')
+                    ga_status = availability.get(ga_uuid, 'free')
+                    is_sold_out = ga_status in ('booked', 'sold', 'taken')
+                else:
+                    # Regular seat category - count available seats with this category
+                    # Stock will be calculated after seats are built
+                    current_stock = None
+                    is_sold_out = False
+
+                ticket_categories.append(TicketCategory(
+                    category_name=category_label,
+                    category_id=str(category_key),
+                    price=price,
+                    current_stock=current_stock,
+                    is_out_of_stock=is_sold_out,
+                    group_name=category_map.get(str(category_key), ''),
+                    ticket_type=ticket_label or 'Ticket',
+                ))
+
+            logger.info("built_ticket_categories_from_rendering_info", count=len(ticket_categories))
+        else:
+            # Fallback: use old GA areas approach if rendering-info not available
+            logger.warning("no_rendering_info_for_categories_falling_back_to_ga_areas")
+            for ga in ga_areas:
+                category_key = ga.get('categoryKey')
+                ga_label = ga.get('label', 'General Admission')
+
+                price, ticket_label = self._get_price_for_category(
+                    category_key, category_map, pricing, ga_label
+                )
+
+                ga_uuid = ga.get('uuid', '')
+                ga_status = availability.get(ga_uuid, 'free')
+                is_sold_out = ga_status in ('booked', 'sold', 'taken')
+
+                ticket_categories.append(TicketCategory(
+                    category_name=ga_label,
+                    category_id=category_key or ga_uuid,
+                    price=price,
+                    current_stock=ga.get('capacity'),
+                    is_out_of_stock=is_sold_out,
+                    ticket_type=ticket_label or 'Ticket',
+                ))
+
+        # Calculate available seat counts per category
+        if seats and ticket_categories:
+            from collections import Counter
+
+            # Count available seats by price_level (which is the category label)
+            available_by_category = Counter(
+                seat.price_level for seat in seats
+                if seat.status == SeatStatus.AVAILABLE
+            )
+
+            # Count booked seats by category
+            booked_by_category = Counter(
+                seat.price_level for seat in seats
+                if seat.status in (SeatStatus.BOOKED, SeatStatus.HELD)
+            )
+
+            # Update ticket_categories with seat counts
+            for cat in ticket_categories:
+                if cat.current_stock is None:  # Only for non-GA categories
+                    cat.current_stock = available_by_category.get(cat.category_name, 0)
+
+                    # Update is_out_of_stock if we have booked seats but no available seats
+                    if cat.current_stock == 0 and booked_by_category.get(cat.category_name, 0) > 0:
+                        cat.is_out_of_stock = True
+
+        logger.info("built_seats", seat_count=len(seats), category_count=len(ticket_categories))
+        return seats, ticket_categories
 
     def _build_seats_from_availability(self, availability: Dict[str, str],
                                        pricing: Dict[str, Dict[str, Any]]) -> List[Seat]:
@@ -433,6 +659,7 @@ class SeatsIOScraper(BaseScraper):
         responses: list[CapturedResponse],
         pricing: Dict[str, Dict[str, Any]],
         category_map: Dict[str, str],
+        rendering_info: Optional[Dict[str, Any]] = None,
     ) -> List[Seat]:
         """
         Build Seat list from object-statuses API when chart has no rows
@@ -451,6 +678,14 @@ class SeatsIOScraper(BaseScraper):
             parsed_data = json.loads(decoded_json)
         except json.JSONDecodeError:
             return seats
+
+        # Extract rendering-info lookups
+        object_categories = {}
+        category_by_key = {}
+        if rendering_info:
+            object_categories = rendering_info.get('objectCategories', {})
+            category_by_key = rendering_info.get('category_by_key', {})
+
         seat_list = []
         if isinstance(parsed_data, list):
             seat_list = parsed_data
@@ -470,14 +705,24 @@ class SeatsIOScraper(BaseScraper):
             status_str = seat_data.get('status', 'free')
             status = self.parse_seat_status(status_str)
             category_key = str(seat_data.get('categoryKey', '')) if seat_data.get('categoryKey') is not None else None
-            price, level_label = self._get_price_for_category(category_key, category_map, pricing)
+
+            # NEW: Use rendering-info for category label
+            category_label = None
+            if rendering_info and label in object_categories:
+                cat_key = object_categories[label]
+                if cat_key in category_by_key:
+                    category_label = category_by_key[cat_key].get('label')
+                    category_key = str(cat_key)
+
+            price, level_label = self._get_price_for_category(category_key, category_map, pricing, category_label)
+
             seats.append(Seat(
                 section=section,
                 row=row,
                 seat=seat_num or 'GA',
                 price=price,
                 status=status,
-                price_level=level_label or category_map.get(category_key, ''),
+                price_level=category_label or level_label or category_map.get(category_key, ''),
             ))
         logger.info("built_seats_from_object_statuses", count=len(seats))
         return seats
@@ -511,49 +756,92 @@ class SeatsIOScraper(BaseScraper):
 
     def _get_price_for_category(self, category_key: Optional[str],
                                  category_map: Dict[str, str],
-                                 pricing: Dict[str, Dict[str, Any]]) -> tuple[Decimal, Optional[str]]:
+                                 pricing: Dict[str, Dict[str, Any]],
+                                 category_label: Optional[str] = None) -> tuple[Decimal, Optional[str]]:
         """
-        Get price for a category key by matching through category_map and pricing.
+        Get price for a category by matching through category_label, category_key, and category_map.
+
+        Matching priority:
+        1. Exact match by category_label (from rendering-info)
+        2. Exact match by category_key
+        3. Match via category_map label → pricing key
+        4. Partial match by category_label or category_map label
+        5. Fallback: first price
 
         Returns:
             Tuple of (price, ticket_label)
         """
-        if not category_key:
-            if pricing:
-                first = next(iter(pricing.values()))
-                return first.get('price', Decimal('0')), first.get('label')
-            return Decimal('0'), None
+        # NEW: Try category_label first (most reliable from rendering-info)
+        if category_label and pricing:
+            # Exact match
+            if category_label in pricing:
+                p = pricing[category_label]
+                return p.get('price', Decimal('0')), p.get('label')
+
+            # Case-insensitive match
+            for pk, pv in pricing.items():
+                if pk.lower() == category_label.lower():
+                    return pv.get('price', Decimal('0')), pv.get('label')
 
         # Direct match: category_key in pricing dict
-        if category_key in pricing:
+        if category_key and category_key in pricing:
             p = pricing[category_key]
             return p.get('price', Decimal('0')), p.get('label')
 
         # Match via category_map label → pricing key
-        category_label = category_map.get(category_key, '')
-        if category_label:
+        if category_key:
+            mapped_label = category_map.get(category_key, '')
+            if mapped_label:
+                # Exact match
+                if mapped_label in pricing:
+                    p = pricing[mapped_label]
+                    return p.get('price', Decimal('0')), p.get('label')
+
+                # Case-insensitive match
+                for pk, pv in pricing.items():
+                    if pk.lower() == mapped_label.lower():
+                        return pv.get('price', Decimal('0')), pv.get('label')
+
+        # Partial match with category_label
+        if category_label and pricing:
             for pk, pv in pricing.items():
-                if pk.lower() == category_label.lower():
-                    return pv.get('price', Decimal('0')), pv.get('label')
-                # Partial match
                 if category_label.lower() in pk.lower() or pk.lower() in category_label.lower():
+                    logger.debug("partial_category_match", category_label=category_label, pricing_key=pk)
                     return pv.get('price', Decimal('0')), pv.get('label')
+
+        # Partial match via category_map
+        if category_key:
+            mapped_label = category_map.get(category_key, '')
+            if mapped_label:
+                for pk, pv in pricing.items():
+                    if mapped_label.lower() in pk.lower() or pk.lower() in mapped_label.lower():
+                        logger.debug("partial_category_map_match", mapped_label=mapped_label, pricing_key=pk)
+                        return pv.get('price', Decimal('0')), pv.get('label')
 
         # Fallback: first price
         if pricing:
             first = next(iter(pricing.values()))
+            logger.debug("using_fallback_price", category_key=category_key, category_label=category_label)
             return first.get('price', Decimal('0')), first.get('label')
 
         return Decimal('0'), None
 
     def _extract_ga_categories_from_html(self, page_html: str,
-                                          pricing: Dict[str, Dict[str, Any]]) -> List[TicketCategory]:
+                                          pricing: Dict[str, Dict[str, Any]],
+                                          rendering_info: Optional[Dict[str, Any]] = None) -> List[TicketCategory]:
         """
         Extract GA area info from canGASelectionBeIncreased function in page HTML.
 
         The function lists GA areas with their max selection limits.
         """
         categories = []
+
+        # Extract rendering-info lookups
+        object_categories = {}
+        category_by_key = {}
+        if rendering_info:
+            object_categories = rendering_info.get('objectCategories', {})
+            category_by_key = rendering_info.get('category_by_key', {})
 
         try:
             # Pattern: canGASelectionBeIncreased function contains GA area references
@@ -565,15 +853,24 @@ class SeatsIOScraper(BaseScraper):
                 for ga_name, max_qty in ga_match:
                     price = Decimal('0')
                     label = None
-                    # Match GA name to pricing
+
+                    # NEW: Try rendering-info first
+                    category_label = None
+                    if rendering_info and ga_name in object_categories:
+                        cat_key = object_categories[ga_name]
+                        if cat_key in category_by_key:
+                            category_label = category_by_key[cat_key].get('label')
+
+                    # Match GA name to pricing (use category_label if available)
+                    lookup_name = category_label or ga_name
                     for pk, pv in pricing.items():
-                        if pk.lower() == ga_name.lower() or ga_name.lower() in pk.lower():
+                        if pk.lower() == lookup_name.lower() or lookup_name.lower() in pk.lower():
                             price = pv.get('price', Decimal('0'))
                             label = pv.get('label')
                             break
 
                     categories.append(TicketCategory(
-                        category_name=ga_name,
+                        category_name=category_label or ga_name,
                         category_id=ga_name,
                         price=price,
                         current_stock=int(max_qty),
@@ -600,6 +897,12 @@ class SeatsIOScraper(BaseScraper):
         for r in responses:
             if 'charts/published' in r.url or ('charts' in r.url and 'published' in r.url):
                 api_urls['chart_published'] = r.url
+                break
+
+        # Find rendering-info URL
+        for r in responses:
+            if 'rendering-info' in r.url:
+                api_urls['rendering_info'] = r.url
                 break
 
         if seatsio_config.get('workspace_key'):

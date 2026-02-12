@@ -139,6 +139,7 @@ class BrowserAutomation:
             'object-statuses',
             'charts',
             'published',
+            'rendering-info',
             '/api/',
         ]
 
