@@ -20,7 +20,7 @@ import json
 import csv
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, UTC
 import structlog
 
 # Configure logging
@@ -62,7 +62,7 @@ def export_events_json(events: list[PreKindleEventSummary], output_dir: str) -> 
     filepath = output_path / filename
 
     data = {
-        "discovered_at": datetime.utcnow().isoformat(),
+        "discovered_at": datetime.now(UTC).isoformat(),
         "total_events": len(events),
         "events": [e.model_dump(mode='json') for e in events],
     }
@@ -104,6 +104,7 @@ def export_events_csv(events: list[PreKindleEventSummary], output_dir: str) -> s
         'ticket_url',
         'thumbnail_url',
         'is_sold_out',
+        'purchasable',
     ]
 
     with open(filepath, 'w', newline='', encoding='utf-8') as f:
@@ -123,6 +124,7 @@ def export_events_csv(events: list[PreKindleEventSummary], output_dir: str) -> s
                 'ticket_url': event.ticket_url or '',
                 'thumbnail_url': event.thumbnail_url or '',
                 'is_sold_out': event.is_sold_out,
+                'purchasable': event.purchasable,
             })
 
     return str(filepath)
@@ -147,12 +149,14 @@ Examples:
     parser.add_argument('--format', '-f', nargs='+', choices=['json', 'csv'],
                         default=['json', 'csv'],
                         help='Output format(s) (default: json csv)')
-    parser.add_argument('--limit', type=int, default=100,
-                        help='Results per page (default: 100)')
+    parser.add_argument('--limit', type=int, default=50,
+                        help='Results per page (default: 50)')
     parser.add_argument('--max-pages', type=int, default=None,
                         help='Maximum pages to fetch (default: all)')
     parser.add_argument('--page', type=int, default=0,
                         help='Starting page (0-indexed, default: 0)')
+    parser.add_argument('--delay', type=float, default=None,
+                        help='Seconds to wait between paginated requests (default: 1.0)')
     parser.add_argument('--debug', action='store_true',
                         help='Enable debug logging')
 
@@ -164,6 +168,7 @@ Examples:
     config = ScraperConfig(
         search_limit=args.limit,
         output_dir=args.output_dir,
+        discovery_request_delay=args.delay if args.delay is not None else 1.0,
     )
 
     try:
@@ -183,6 +188,10 @@ Examples:
         sold_out = sum(1 for e in events if e.is_sold_out)
         available = len(events) - sold_out
         print(f"Available: {available}, Sold Out: {sold_out}")
+
+        purchasable_count = sum(1 for e in events if e.purchasable)
+        not_purchasable_count = len(events) - purchasable_count
+        print(f"Purchasable: {purchasable_count}, Not purchasable (free): {not_purchasable_count}")
 
         # Show sample events
         if events:

@@ -5,6 +5,7 @@ Uses the REST search API at web.prekindle.com to discover all events.
 API: GET https://web.prekindle.com/api/event/search?page={page}&limit={limit}&timeZone=America%2FNew_York&startTime={iso_datetime}
 """
 
+import asyncio
 import re
 import sys
 from datetime import datetime
@@ -120,6 +121,10 @@ class PreKindleEventSearch:
                 logger.info("max_pages_reached", max_pages=max_pages)
                 break
 
+            # Delay between requests (skip before first page)
+            if page > start_page and self.config.discovery_request_delay > 0:
+                await asyncio.sleep(self.config.discovery_request_delay)
+
             try:
                 data = await self._fetch_page(page, limit, start_time)
             except httpx.HTTPStatusError as e:
@@ -162,6 +167,8 @@ class PreKindleEventSearch:
             cta_props = event_data.get('ctaButtonProps', {})
             ticket_url = cta_props.get('href', '')
             is_sold_out = cta_props.get('disabled', False)
+            label = cta_props.get('label', '')
+            purchasable = label.strip() != "Free - No Purchase Required"
 
             if ticket_url:
                 id_match = re.search(r'/(?:promo|checkout|find-tickets)/id/(-?\d+)', ticket_url)
@@ -187,6 +194,7 @@ class PreKindleEventSearch:
                 ticket_url=ticket_url,
                 thumbnail_url=event_data.get('thumbnailUrl'),
                 is_sold_out=bool(is_sold_out),
+                purchasable=purchasable,
             )
 
         except Exception as e:

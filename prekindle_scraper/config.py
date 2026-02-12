@@ -41,6 +41,7 @@ class ScraperConfig:
     search_api_url: str = "https://web.prekindle.com/api/event/search"
     search_limit: int = 100
     timezone: str = "America/New_York"
+    discovery_request_delay: float = 1.0  # seconds between paginated requests
 
 
 PREKINDLE_DOMAINS = ['prekindle.com', 'web.prekindle.com']
@@ -49,6 +50,8 @@ BUTTON_SELECTORS = {
     "get_tickets": [
         'a:has-text("GET TICKETS")',
         'a:has-text("Get Tickets")',
+        'a:has-text("Buy Tickets")',
+        'a:has-text("RSVP")',
         'a[href*="checkout/id/"]',
         'a[href*="find-tickets/id/"]',
     ],

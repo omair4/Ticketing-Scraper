@@ -257,6 +257,12 @@ class BrowserAutomation:
             # Step 7: Detect scenario
             scenario = self._detect_scenario(html)
 
+            # Step 8 (general_admission only): Select one ticket so delivery methods appear, then re-capture HTML
+            if scenario == 'general_admission':
+                new_html = await self._select_one_ticket_and_recapture()
+                if new_html:
+                    html = new_html
+
             logger.info("navigation_complete",
                          scenario=scenario,
                          responses_captured=len(self.captured_responses),
@@ -294,19 +300,22 @@ class BrowserAutomation:
                 logger.debug("selector_failed", selector=selector, error=str(e))
                 continue
 
-        # Fallback: scan all links for "GET TICKETS" or "TICKETS" text
+        # Fallback: scan all links for GET TICKETS / Buy Tickets / RSVP / TICKETS text
         try:
             all_links = self.page.locator('a')
             count = await all_links.count()
+            fallback_phrases = ('get tickets', 'buy tickets', 'rsvp', 'tickets')
             for i in range(min(count, 30)):
                 link = all_links.nth(i)
                 try:
                     text = await link.text_content()
-                    if text and ('get tickets' in text.lower() or text.strip().upper() == 'TICKETS'):
-                        if await link.is_visible(timeout=2000):
-                            await link.click()
-                            logger.info("clicked_get_tickets_fallback", text=text)
-                            return True
+                    if text:
+                        t = text.strip().lower()
+                        if t in fallback_phrases or any(p in t for p in fallback_phrases):
+                            if await link.is_visible(timeout=2000):
+                                await link.click()
+                                logger.info("clicked_get_tickets_fallback", text=text)
+                                return True
                 except Exception:
                     continue
         except Exception as e:
@@ -314,6 +323,50 @@ class BrowserAutomation:
 
         logger.warning("get_tickets_button_not_found")
         return False
+
+    async def _select_one_ticket_and_recapture(self) -> Optional[str]:
+        """
+        On general_admission pages, select quantity 1 in the first ticket dropdown
+        so the delivery methods section appears in the DOM, then re-capture page HTML.
+        Returns new page HTML or None if selection failed (caller keeps original HTML).
+        """
+        try:
+            selects = self.page.locator('table select, select')
+            count = await selects.count()
+            for i in range(min(count, 10)):
+                sel = selects.nth(i)
+                try:
+                    if not await sel.is_visible(timeout=1000):
+                        continue
+                    # Prefer value "1"; otherwise first non-zero so delivery section appears
+                    options = await sel.locator('option').all()
+                    chosen = None
+                    for opt in options:
+                        val = await opt.get_attribute('value')
+                        if val is None:
+                            continue
+                        try:
+                            if int(val) == 1:
+                                chosen = "1"
+                                break
+                            if chosen is None and int(val) >= 1:
+                                chosen = val
+                        except (ValueError, TypeError):
+                            continue
+                    if chosen:
+                        await sel.select_option(value=chosen)
+                        logger.info("selected_one_ticket_for_delivery_methods", value=chosen)
+                        await asyncio.sleep(
+                            max(2000, self.config.page_load_delay) / 1000
+                        )
+                        return await self.page.content()
+                except Exception as e:
+                    logger.debug("select_ticket_attempt_failed", index=i, error=str(e))
+                    continue
+            logger.debug("no_quantity_select_found_for_delivery_step")
+        except Exception as e:
+            logger.debug("select_one_ticket_and_recapture_failed", error=str(e))
+        return None
 
     async def _wait_for_ticket_page(self, timeout: int = 60000):
         """

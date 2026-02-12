@@ -67,6 +67,12 @@ class SeatsIOScraper(BaseScraper):
 
         if chart_data:
             seats, ga_categories = self._build_seats(chart_data, availability, pricing)
+            # When chart has no rows (e.g. table/booth layout), build seats from object-statuses
+            if not seats and availability:
+                seats = self._build_seats_from_object_statuses(
+                    captured_responses, pricing,
+                    chart_data.get('category_map', {}),
+                )
         else:
             self.add_warning("No chart data found — trying fallback extraction from availability data")
             seats = self._build_seats_from_availability(availability, pricing)
@@ -203,6 +209,8 @@ class SeatsIOScraper(BaseScraper):
                 return None
 
             chart_data = json.loads(decoded_json)
+            sub_chart = chart_data.get('subChart', {})
+            rows = sub_chart.get('rows', [])
 
             # Extract category map
             category_map = {}
@@ -214,8 +222,6 @@ class SeatsIOScraper(BaseScraper):
 
             # Extract seats from rows
             chart_seats = []
-            sub_chart = chart_data.get('subChart', {})
-            rows = sub_chart.get('rows', [])
 
             for row in rows:
                 if not isinstance(row, dict):
@@ -421,6 +427,73 @@ class SeatsIOScraper(BaseScraper):
             ))
 
         return seats
+
+    def _build_seats_from_object_statuses(
+        self,
+        responses: list[CapturedResponse],
+        pricing: Dict[str, Dict[str, Any]],
+        category_map: Dict[str, str],
+    ) -> List[Seat]:
+        """
+        Build Seat list from object-statuses API when chart has no rows
+        (e.g. table/booth layout). Uses objectLabelOrUuid or label/labels like event_scraper.
+        """
+        seats = []
+        seatsio_response = self.find_response_by_pattern(responses, 'object-statuses')
+        if not seatsio_response:
+            seatsio_response = self.find_response_by_pattern(responses, 'seatsio.net')
+        if not seatsio_response or not seatsio_response.body:
+            return seats
+        decoded_json = decode_seatsio_response(seatsio_response.body)
+        if not decoded_json:
+            return seats
+        try:
+            parsed_data = json.loads(decoded_json)
+        except json.JSONDecodeError:
+            return seats
+        seat_list = []
+        if isinstance(parsed_data, list):
+            seat_list = parsed_data
+        elif isinstance(parsed_data, dict):
+            for items in parsed_data.values():
+                if isinstance(items, list):
+                    seat_list.extend(items)
+        for seat_data in seat_list:
+            if not isinstance(seat_data, dict):
+                continue
+            label = seat_data.get('objectLabelOrUuid') or seat_data.get('label', '')
+            if not label and seat_data.get('uuid'):
+                label = str(seat_data.get('uuid'))
+            if not label:
+                continue
+            section, row, seat_num = self._parse_seat_label_from_object(seat_data, label)
+            status_str = seat_data.get('status', 'free')
+            status = self.parse_seat_status(status_str)
+            category_key = str(seat_data.get('categoryKey', '')) if seat_data.get('categoryKey') is not None else None
+            price, level_label = self._get_price_for_category(category_key, category_map, pricing)
+            seats.append(Seat(
+                section=section,
+                row=row,
+                seat=seat_num or 'GA',
+                price=price,
+                status=status,
+                price_level=level_label or category_map.get(category_key, ''),
+            ))
+        logger.info("built_seats_from_object_statuses", count=len(seats))
+        return seats
+
+    def _parse_seat_label_from_object(self, seat_data: dict, label: str) -> tuple[str, str, str]:
+        """Parse section, row, seat from object-statuses item (labels or label string)."""
+        labels = seat_data.get('labels', {})
+        if labels:
+            section = labels.get('section', '')
+            parent = labels.get('parent', {})
+            own = labels.get('own', {})
+            row = parent.get('label', '') if isinstance(parent, dict) else ''
+            seat_num = own.get('label', '') if isinstance(own, dict) else ''
+            if section or row or seat_num:
+                return section or 'Unknown', row or 'Unknown', seat_num or 'GA'
+        return self._parse_label(label)
 
     def _parse_label(self, label: str) -> tuple[str, str, str]:
         """Parse section-row-seat from a label string."""

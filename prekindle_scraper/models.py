@@ -191,6 +191,7 @@ class PreKindleEventSummary(BaseModel):
     ticket_url: Optional[str] = None
     thumbnail_url: Optional[str] = None
     is_sold_out: bool = False
+    purchasable: bool = True
 
     @field_validator('performers', mode='before')
     @classmethod

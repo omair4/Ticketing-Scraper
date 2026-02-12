@@ -18,6 +18,21 @@ from browser import CapturedResponse
 
 logger = structlog.get_logger()
 
+# Names that are delivery methods, not ticket categories — exclude from ticket_categories
+DELIVERY_METHOD_NAMES = frozenset({
+    'will call', 'print at home', 'mobile', 'mail', 'e-ticket', 'e-tickets',
+    'will call pickup', 'print at home ticket', 'mobile ticket', 'mail ticket',
+})
+
+
+def _is_delivery_method_name(name: str) -> bool:
+    """True if name is a delivery method label (e.g. Will Call), not a ticket type."""
+    if not name or not name.strip():
+        return False
+    return name.strip().lower() in DELIVERY_METHOD_NAMES or any(
+        d in name.strip().lower() for d in ('will call', 'print at home', 'mobile delivery', 'e-ticket')
+    )
+
 
 class GeneralAdmissionScraper(BaseScraper):
     """Scraper for PreKindle events with HTML table ticket selection."""
@@ -140,9 +155,11 @@ class GeneralAdmissionScraper(BaseScraper):
                     category_name = text
 
             # Find select dropdown in any cell for max quantity
+            has_select = False
             for cell in cells:
                 select = cell.find('select')
                 if select:
+                    has_select = True
                     options = select.find_all('option')
                     if options:
                         # Max quantity is the highest option value
@@ -162,7 +179,14 @@ class GeneralAdmissionScraper(BaseScraper):
                     if select.get('disabled') is not None:
                         is_sold_out = True
 
+            # Filter out rows without select dropdowns (e.g., disclaimer rows)
+            if not has_select:
+                return None
+
             if not category_name:
+                return None
+
+            if _is_delivery_method_name(category_name):
                 return None
 
             # If no explicit ticket type found, default
@@ -173,7 +197,7 @@ class GeneralAdmissionScraper(BaseScraper):
                 category_name=category_name,
                 category_id=category_name.lower().replace(' ', '_'),
                 price=price,
-                current_stock=max_qty,
+                current_stock=None,  # Dropdown max is UI limit, not actual inventory
                 is_out_of_stock=is_sold_out,
                 ticket_type=ticket_type,
             )
@@ -264,11 +288,14 @@ class GeneralAdmissionScraper(BaseScraper):
                 if select.get('disabled') is not None:
                     is_sold_out = True
 
+                if _is_delivery_method_name(category_name):
+                    continue
+
                 categories.append(TicketCategory(
                     category_name=category_name,
                     category_id=category_name.lower().replace(' ', '_'),
                     price=price,
-                    current_stock=max_qty,
+                    current_stock=None,  # Dropdown max is UI limit, not actual inventory
                     is_out_of_stock=is_sold_out,
                     ticket_type=ticket_type,
                 ))
@@ -343,11 +370,14 @@ class GeneralAdmissionScraper(BaseScraper):
                         ticket_type = tt
                         break
 
+                if _is_delivery_method_name(category_name):
+                    continue
+
                 categories.append(TicketCategory(
                     category_name=category_name,
                     category_id=category_name.lower().replace(' ', '_'),
                     price=price,
-                    current_stock=max_qty,
+                    current_stock=None,  # Dropdown max is UI limit, not actual inventory
                     is_out_of_stock=is_sold_out,
                     ticket_type=ticket_type,
                 ))
@@ -361,35 +391,46 @@ class GeneralAdmissionScraper(BaseScraper):
         """
         Parse delivery methods from the checkout page.
 
-        Looks for "Print at Home", "Mobile", "Will Call" with fee info.
-        Only matches leaf-level elements to avoid capturing parent container text.
+        Looks for "Print at Home", "Mobile", "Will Call", etc. in labels, spans,
+        and table cells (td/th) so we catch delivery options shown in tables.
         """
         methods = []
+        seen_lower = set()
 
         try:
             soup = BeautifulSoup(page_html, 'html.parser')
-
             delivery_keywords = ['print at home', 'mobile', 'will call', 'mail', 'e-ticket']
 
-            # Look for leaf-level labels/spans that directly contain a delivery keyword
+            def add_if_delivery(el) -> None:
+                text = el.get_text(strip=True)
+                if len(text) > 80:
+                    return
+                text_lower = text.lower()
+                for keyword in delivery_keywords:
+                    if keyword in text_lower:
+                        if text_lower not in seen_lower:
+                            seen_lower.add(text_lower)
+                            methods.append(text)
+                        return
+
+            # Leaf-level label/span (original behavior)
             for el in soup.find_all(['label', 'span']):
-                # Skip elements that have child elements with text (not leaf)
                 child_elements = el.find_all(['label', 'span', 'div'], recursive=False)
                 if child_elements:
                     continue
+                add_if_delivery(el)
 
-                text = el.get_text(strip=True)
-                text_lower = text.lower()
-
-                # Must be reasonably short (avoids matching huge containers)
-                if len(text) > 80:
-                    continue
-
-                for keyword in delivery_keywords:
-                    if keyword in text_lower:
-                        if text not in methods:
-                            methods.append(text)
-                        break
+            # Table cells (delivery section often uses a table: Will Call, Print at Home, etc.)
+            # Only check first cell of each row to avoid capturing descriptions
+            for el in soup.find_all(['td', 'th']):
+                parent_row = el.find_parent('tr')
+                if parent_row:
+                    first_cell = parent_row.find(['td', 'th'])
+                    if first_cell == el:  # Only process if this IS the first cell
+                        add_if_delivery(el)
+                else:
+                    # Not in a table row, process as-is
+                    add_if_delivery(el)
 
         except Exception as e:
             logger.debug("delivery_methods_parse_failed", error=str(e))
