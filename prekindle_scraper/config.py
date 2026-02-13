@@ -22,6 +22,7 @@ class ScraperConfig:
     # Wait times (milliseconds)
     click_delay: int = 2000
     page_load_delay: int = 3000
+    queue_timeout: int = 120000  # 2 minutes for queue page
 
     # Retry settings
     max_retries: int = 3

@@ -235,12 +235,15 @@ class BrowserAutomation:
                     error="Could not find GET TICKETS button"
                 )
 
-            # Step 4: Wait for navigation + Queue-IT
-            logger.info("waiting_for_ticket_page")
+            # Step 4: Wait for navigation + initial redirect
+            logger.info("waiting_for_navigation")
             await asyncio.sleep(self.config.click_delay / 1000)
 
-            # Wait for Queue-IT to pass and ticket page to load
-            # Queue-IT redirects: promo → q.prekindle.com → find-tickets/checkout
+            # Step 4a: Check for and wait for queue page to complete
+            # Queue redirects: promo → q.prekindle.com → find-tickets/checkout
+            await self._wait_for_queue_to_complete(timeout=self.config.queue_timeout)
+
+            # Step 4b: Wait for final ticket page to load
             await self._wait_for_ticket_page(timeout=60000)
 
             # Step 5: Additional wait for dynamic content (seats.io iframe, etc.)
@@ -368,6 +371,33 @@ class BrowserAutomation:
         except Exception as e:
             logger.debug("select_one_ticket_and_recapture_failed", error=str(e))
         return None
+
+    async def _is_on_queue_page(self) -> bool:
+        """Check if currently on a PreKindle queue page."""
+        current_url = self.page.url
+        return current_url.startswith('https://q.prekindle') or 'q.prekindle' in current_url
+
+    async def _wait_for_queue_to_complete(self, timeout: int = 120000):
+        """
+        Wait for queue page (q.prekindle...) to redirect to actual ticket page.
+        Queue pages are intermediate pages that redirect once the user's turn arrives.
+        
+        Args:
+            timeout: Maximum time to wait in milliseconds (default: 120000ms = 2 minutes)
+        """
+        if await self._is_on_queue_page():
+            logger.info("queue_page_detected", url=self.page.url, 
+                       msg="Waiting for queue to complete...")
+            try:
+                # Wait until we're no longer on a queue page
+                await self.page.wait_for_url(
+                    lambda url: 'q.prekindle' not in url,
+                    timeout=timeout
+                )
+                logger.info("queue_completed", new_url=self.page.url)
+            except Exception as e:
+                logger.warning("queue_wait_timeout", error=str(e), 
+                              msg="Queue may be taking longer than expected")
 
     async def _wait_for_ticket_page(self, timeout: int = 60000):
         """
