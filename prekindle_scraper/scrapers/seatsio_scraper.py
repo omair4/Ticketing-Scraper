@@ -71,7 +71,7 @@ class SeatsIOScraper(BaseScraper):
         ticket_categories = []
 
         if chart_data:
-            seats, ticket_categories = self._build_seats(chart_data, availability, pricing, rendering_info)
+            seats, ticket_categories = self._build_seats(chart_data, availability, pricing, rendering_info, captured_responses)
             # When chart has no rows (e.g. table/booth layout), build seats from object-statuses
             if not seats and availability:
                 seats = self._build_seats_from_object_statuses(
@@ -257,8 +257,7 @@ class SeatsIOScraper(BaseScraper):
                 return None
 
             chart_data = json.loads(decoded_json)
-            sub_chart = chart_data.get('subChart', {})
-
+            
             # Extract category map
             category_map = {}
             categories = chart_data.get('categories', {})
@@ -269,80 +268,162 @@ class SeatsIOScraper(BaseScraper):
 
             # Extract seats from rows
             chart_seats = []
+            ga_areas = []
+            
+            # FIX: Support both subChart (single floor) and subChartFloors (multi-floor venues)
+            venue_type = chart_data.get('venueType', '')
+            
+            if 'subChartFloors' in chart_data:
+                # Multi-floor venue (WITH_SECTIONS_AND_FLOORS)
+                logger.info("processing_multi_floor_venue", venue_type=venue_type, floors=len(chart_data['subChartFloors']))
+                
+                for floor_idx, floor in enumerate(chart_data['subChartFloors']):
+                    # Extract sections from this floor
+                    floor_sections = floor.get('sections', [])
+                    floor_rows = floor.get('rows', [])
+                    
+                    # Helper function to extract seats from rows
+                    def extract_seats_from_rows(rows, section_label_override=None):
+                        for row in rows:
+                            if not isinstance(row, dict):
+                                continue
 
-            # Check both top-level rows and section subChart rows
-            rows = sub_chart.get('rows', [])
-            sections = sub_chart.get('sections', [])
+                            row_label = row.get('label', '')
+                            section_label = section_label_override or row.get('sectionLabel', '')
+                            seats = row.get('seats', [])
 
-            # Helper function to extract seats from rows
-            def extract_seats_from_rows(rows, section_label_override=None):
-                for row in rows:
-                    if not isinstance(row, dict):
+                            for seat in seats:
+                                if not isinstance(seat, dict):
+                                    continue
+
+                                uuid = seat.get('uuid', '')
+                                if not uuid:
+                                    continue
+
+                                x_val = seat.get('x')
+                                y_val = seat.get('y')
+                                if x_val is not None:
+                                    x_val = float(x_val)
+                                if y_val is not None:
+                                    y_val = float(y_val)
+
+                                semi_ambulatory = bool(seat.get('semiAmbulatorySeat', False))
+                                hearing_impaired = bool(seat.get('hearingImpaired', False))
+                                sign_lang = bool(seat.get('signLanguageInterpretation', False))
+                                ada = semi_ambulatory or hearing_impaired or sign_lang
+
+                                chart_seats.append({
+                                    'section': section_label or 'Unknown',
+                                    'row': row_label or 'Unknown',
+                                    'seat_label': seat.get('label', ''),
+                                    'categoryKey': str(seat.get('categoryKey')) if seat.get('categoryKey') is not None else None,
+                                    'uuid': uuid,
+                                    'x': x_val,
+                                    'y': y_val,
+                                    'ADA': ada,
+                                })
+                    
+                    # Extract from floor-level rows
+                    extract_seats_from_rows(floor_rows)
+                    
+                    # Extract from sections in this floor
+                    for section in floor_sections:
+                        if not isinstance(section, dict):
+                            continue
+                        section_label = section.get('label', '')
+                        section_sub_chart = section.get('subChart', {})
+                        section_rows = section_sub_chart.get('rows', [])
+                        extract_seats_from_rows(section_rows, section_label)
+                    
+                    # Extract GA areas from this floor
+                    floor_ga_areas = floor.get('generalAdmissionAreas', [])
+                    for ga in floor_ga_areas:
+                        if isinstance(ga, dict):
+                            ga_areas.append({
+                                'label': ga.get('label', ''),
+                                'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
+                                'uuid': ga.get('uuid', ''),
+                                'capacity': ga.get('capacity'),
+                            })
+                
+                logger.info("extracted_multi_floor_chart_data",
+                           categories=len(category_map),
+                           seats=len(chart_seats),
+                           ga_areas=len(ga_areas))
+            else:
+                # Single-floor venue (original subChart logic)
+                sub_chart = chart_data.get('subChart', {})
+                rows = sub_chart.get('rows', [])
+                sections = sub_chart.get('sections', [])
+
+                # Helper function to extract seats from rows (single-floor venue)
+                def extract_seats_from_rows(rows, section_label_override=None):
+                    for row in rows:
+                        if not isinstance(row, dict):
+                            continue
+
+                        row_label = row.get('label', '')
+                        section_label = section_label_override or row.get('sectionLabel', '')
+                        seats = row.get('seats', [])
+
+                        for seat in seats:
+                            if not isinstance(seat, dict):
+                                continue
+
+                            uuid = seat.get('uuid', '')
+                            if not uuid:
+                                continue
+
+                            x_val = seat.get('x')
+                            y_val = seat.get('y')
+                            if x_val is not None:
+                                x_val = float(x_val)
+                            if y_val is not None:
+                                y_val = float(y_val)
+
+                            semi_ambulatory = bool(seat.get('semiAmbulatorySeat', False))
+                            hearing_impaired = bool(seat.get('hearingImpaired', False))
+                            sign_lang = bool(seat.get('signLanguageInterpretation', False))
+                            ada = semi_ambulatory or hearing_impaired or sign_lang
+
+                            chart_seats.append({
+                                'section': section_label or 'Unknown',
+                                'row': row_label or 'Unknown',
+                                'seat_label': seat.get('label', ''),
+                                'categoryKey': str(seat.get('categoryKey')) if seat.get('categoryKey') is not None else None,
+                                'uuid': uuid,
+                                'x': x_val,
+                                'y': y_val,
+                                'ADA': ada,
+                            })
+
+                # Extract from top-level rows
+                extract_seats_from_rows(rows)
+
+                # Extract from section subCharts
+                for section in sections:
+                    if not isinstance(section, dict):
                         continue
+                    section_label = section.get('label', '')
+                    section_sub_chart = section.get('subChart', {})
+                    section_rows = section_sub_chart.get('rows', [])
+                    extract_seats_from_rows(section_rows, section_label)
 
-                    row_label = row.get('label', '')
-                    section_label = section_label_override or row.get('sectionLabel', '')
-                    seats = row.get('seats', [])
-
-                    for seat in seats:
-                        if not isinstance(seat, dict):
-                            continue
-
-                        uuid = seat.get('uuid', '')
-                        if not uuid:
-                            continue
-
-                        x_val = seat.get('x')
-                        y_val = seat.get('y')
-                        if x_val is not None:
-                            x_val = float(x_val)
-                        if y_val is not None:
-                            y_val = float(y_val)
-
-                        semi_ambulatory = bool(seat.get('semiAmbulatorySeat', False))
-                        hearing_impaired = bool(seat.get('hearingImpaired', False))
-                        sign_lang = bool(seat.get('signLanguageInterpretation', False))
-                        ada = semi_ambulatory or hearing_impaired or sign_lang
-
-                        chart_seats.append({
-                            'section': section_label or 'Unknown',
-                            'row': row_label or 'Unknown',
-                            'seat_label': seat.get('label', ''),
-                            'categoryKey': str(seat.get('categoryKey')) if seat.get('categoryKey') is not None else None,
-                            'uuid': uuid,
-                            'x': x_val,
-                            'y': y_val,
-                            'ADA': ada,
+                # Extract GA areas
+                general_admission_areas = sub_chart.get('generalAdmissionAreas', [])
+                for ga in general_admission_areas:
+                    if isinstance(ga, dict):
+                        ga_areas.append({
+                            'label': ga.get('label', ''),
+                            'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
+                            'uuid': ga.get('uuid', ''),
+                            'capacity': ga.get('capacity'),
                         })
 
-            # Extract from top-level rows
-            extract_seats_from_rows(rows)
-
-            # Extract from section subCharts
-            for section in sections:
-                if not isinstance(section, dict):
-                    continue
-                section_label = section.get('label', '')
-                section_sub_chart = section.get('subChart', {})
-                section_rows = section_sub_chart.get('rows', [])
-                extract_seats_from_rows(section_rows, section_label)
-
-            # Extract GA areas
-            ga_areas = []
-            general_admission_areas = sub_chart.get('generalAdmissionAreas', [])
-            for ga in general_admission_areas:
-                if isinstance(ga, dict):
-                    ga_areas.append({
-                        'label': ga.get('label', ''),
-                        'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
-                        'uuid': ga.get('uuid', ''),
-                        'capacity': ga.get('capacity'),
-                    })
-
-            logger.info("extracted_chart_data",
-                         categories=len(category_map),
-                         seats=len(chart_seats),
-                         ga_areas=len(ga_areas))
+                logger.info("extracted_chart_data",
+                             categories=len(category_map),
+                             seats=len(chart_seats),
+                             ga_areas=len(ga_areas))
 
             return {
                 'category_map': category_map,
@@ -410,7 +491,8 @@ class SeatsIOScraper(BaseScraper):
 
     def _build_seats(self, chart_data: Dict[str, Any], availability: Dict[str, str],
                      pricing: Dict[str, Dict[str, Any]],
-                     rendering_info: Optional[Dict[str, Any]] = None) -> tuple[List[Seat], List[TicketCategory]]:
+                     rendering_info: Optional[Dict[str, Any]] = None,
+                     responses: Optional[list] = None) -> tuple[List[Seat], List[TicketCategory]]:
         """
         Combine rendering-info + chart seats + availability + pricing into Seat and TicketCategory objects.
 
@@ -585,11 +667,45 @@ class SeatsIOScraper(BaseScraper):
                             break
 
                 if matching_ga_area:
-                    # GA category - use capacity from GA area
-                    current_stock = matching_ga_area.get('capacity')
+                    # GA category - check availability API for actual available quantity
                     ga_uuid = matching_ga_area.get('uuid', '')
-                    ga_status = availability.get(ga_uuid, 'free')
-                    is_sold_out = ga_status in ('booked', 'sold', 'taken')
+                    ga_label = matching_ga_area.get('label', '')
+                    
+                    # Try to find GA status in availability by uuid or label
+                    ga_status_str = availability.get(ga_uuid) or availability.get(ga_label, 'free')
+                    is_sold_out = ga_status_str in ('booked', 'sold', 'taken')
+                    
+                    # FIX: For GA areas, extract 'quantity' from object-statuses if available
+                    # This is the actual available count, not the total capacity
+                    current_stock = matching_ga_area.get('capacity')  # Default to capacity
+                    
+                    # Check if we have a quantity from object-statuses
+                    if responses:
+                        for response in responses:
+                            if 'object-statuses' in response.url and response.body:
+                                try:
+                                    decoded = decode_seatsio_response(response.body)
+                                    if decoded:
+                                        parsed = json.loads(decoded)
+                                        seat_list = parsed if isinstance(parsed, list) else []
+                                        
+                                        # Find this GA area by uuid or label
+                                        for item in seat_list:
+                                            if not isinstance(item, dict):
+                                                continue
+                                            item_label = item.get('objectLabelOrUuid', '')
+                                            if item_label == ga_uuid or item_label == ga_label:
+                                                # Found the GA area - use quantity field
+                                                quantity = item.get('quantity')
+                                                if quantity is not None:
+                                                    current_stock = int(quantity)
+                                                logger.info("using_ga_quantity_from_api", 
+                                                          ga_label=ga_label, 
+                                                          quantity=quantity,
+                                                          capacity=matching_ga_area.get('capacity'))
+                                                break
+                                except Exception as e:
+                                    logger.debug("failed_to_extract_ga_quantity", error=str(e))
                 else:
                     # Regular seat category - count available seats with this category
                     # Stock will be calculated after seats are built
