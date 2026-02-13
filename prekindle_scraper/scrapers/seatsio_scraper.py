@@ -433,9 +433,24 @@ class SeatsIOScraper(BaseScraper):
         # Extract rendering-info lookups
         object_categories = {}
         category_by_key = {}
+        excluded_objects = set()  # Objects not for sale
+
         if rendering_info:
             object_categories = rendering_info.get('objectCategories', {})
             category_by_key = rendering_info.get('category_by_key', {})
+
+            # Build set of excluded objects from forSaleConfigsPerEvent
+            for_sale_configs = rendering_info.get('forSaleConfigsPerEvent', {})
+            for event_id, config in for_sale_configs.items():
+                if isinstance(config, dict) and not config.get('forSale', True):
+                    # Add all objects marked as not for sale
+                    excluded_objs = config.get('objects', [])
+                    if isinstance(excluded_objs, list):
+                        excluded_objects.update(excluded_objs)
+
+            if excluded_objects:
+                logger.info("excluded_not_for_sale_objects", count=len(excluded_objects),
+                           objects=list(excluded_objects))
 
         # Build seats from chart data
         for cs in chart_seats:
@@ -446,6 +461,14 @@ class SeatsIOScraper(BaseScraper):
             # Extract seat components for composite label building
             section = cs.get('section', '')
             row = cs.get('row', '')
+
+            # Skip seats from sections/rows marked as not for sale
+            if excluded_objects:
+                # Check if section, row, or full seat label is in excluded objects
+                if section in excluded_objects or row in excluded_objects or seat_label in excluded_objects:
+                    logger.debug("skipping_not_for_sale_seat",
+                               section=section, row=row, seat=seat_label)
+                    continue
 
             # Build composite labels for both status and category lookup
             composite_labels = [
@@ -545,6 +568,12 @@ class SeatsIOScraper(BaseScraper):
                 matching_ga_area = None
                 for ga in ga_areas:
                     ga_label = ga.get('label', '')
+
+                    # Skip GA areas marked as not for sale
+                    if excluded_objects and ga_label in excluded_objects:
+                        logger.debug("skipping_not_for_sale_ga_area", area=ga_label)
+                        continue
+
                     # Look up GA area's category via objectCategories
                     if ga_label in object_categories:
                         ga_cat_key = object_categories[ga_label]
@@ -581,6 +610,11 @@ class SeatsIOScraper(BaseScraper):
             for ga in ga_areas:
                 category_key = ga.get('categoryKey')
                 ga_label = ga.get('label', 'General Admission')
+
+                # Skip GA areas marked as not for sale
+                if excluded_objects and ga_label in excluded_objects:
+                    logger.debug("skipping_not_for_sale_ga_area_fallback", area=ga_label)
+                    continue
 
                 price, ticket_label = self._get_price_for_category(
                     category_key, category_map, pricing, ga_label
