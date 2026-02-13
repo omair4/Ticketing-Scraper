@@ -83,14 +83,10 @@ class SeatsIOScraper(BaseScraper):
             self.add_warning("No chart data found — trying fallback extraction from availability data")
             seats = self._build_seats_from_availability(availability, pricing)
 
-        # Step 8: Extract additional GA areas from page HTML
-        html_ga_categories = self._extract_ga_categories_from_html(page_html, pricing, rendering_info)
-        if html_ga_categories:
-            # Merge, avoiding duplicates
-            existing_names = {c.category_name for c in ticket_categories}
-            for cat in html_ga_categories:
-                if cat.category_name not in existing_names:
-                    ticket_categories.append(cat)
+        # Step 8: Skip HTML GA extraction - only use API data (rendering-info)
+        # HTML extraction can incorrectly identify section names as GA areas
+        # All real GA categories should be in rendering-info from seats.io API
+        logger.debug("skipping_html_ga_extraction", reason="only_using_api_data")
 
         if not seats and not ticket_categories:
             self.add_error("No seats or categories extracted")
@@ -505,6 +501,13 @@ class SeatsIOScraper(BaseScraper):
 
             if lookup_label:
                 category_key_from_rendering = object_categories[lookup_label]
+                
+                # FIX: Normalize to int - rendering-info returns mixed int/string types
+                try:
+                    category_key_from_rendering = int(category_key_from_rendering)
+                except (ValueError, TypeError):
+                    pass  # Keep as-is if conversion fails
+                
                 if category_key_from_rendering in category_by_key:
                     cat_info = category_by_key[category_key_from_rendering]
                     category_label = cat_info.get('label')
@@ -593,6 +596,12 @@ class SeatsIOScraper(BaseScraper):
                     current_stock = None
                     is_sold_out = False
 
+                # Skip categories with zero price (likely section/area names, not price categories)
+                if price == 0:
+                    logger.debug("skipping_zero_price_category_from_rendering_info", 
+                               category_label=category_label, category_key=category_key)
+                    continue
+                
                 ticket_categories.append(TicketCategory(
                     category_name=category_label,
                     category_id=str(category_key),
