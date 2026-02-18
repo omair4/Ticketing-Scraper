@@ -549,15 +549,25 @@ class SeatsIOScraper(BaseScraper):
                     continue
 
             # Build composite labels for both status and category lookup
-            composite_labels = [
-                f"{section}-{row}-{seat_label}",    # "Floor 101-A-1" (hyphenated - BEST match per test)
-                f"{section} {row}-{seat_label}",    # "Floor 101 A-1" (spaced variant)
-                seat_label,                          # Just seat label as fallback
-            ]
+            # Handle case where row is unknown/missing (sections that ARE rows, e.g., "Row A", "Row B")
+            if row in ('?', 'Unknown', ''):
+                # Section label IS the row - use 2-component format: "Row A-1"
+                composite_labels = [
+                    f"{section}-{seat_label}",       # "Row A-1" (section directly to seat)
+                    seat_label,                       # Just seat label as fallback
+                ]
+            else:
+                # Normal 3-component format
+                composite_labels = [
+                    f"{section}-{row}-{seat_label}",    # "Floor 101-A-1" (hyphenated - BEST match per test)
+                    f"{section} {row}-{seat_label}",    # "Floor 101 A-1" (spaced variant)
+                    seat_label,                          # Just seat label as fallback
+                ]
 
             # Lookup status using composite label (NOT uuid)
             status = SeatStatus.AVAILABLE  # Default: seats not in object-statuses are available
             matched_label = None
+            
             for label_variant in composite_labels:
                 if label_variant in availability:
                     status = self.parse_seat_status(availability[label_variant])
