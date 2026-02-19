@@ -3,7 +3,7 @@ Base scraper class defining the interface for all PreKindle scrapers
 """
 
 from abc import ABC, abstractmethod
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 import re
 import structlog
 from bs4 import BeautifulSoup
@@ -85,7 +85,8 @@ class BaseScraper(ABC):
     def create_result(self, event_info: EventInfo, seats: list[Seat] = None,
                       ticket_categories: list[TicketCategory] = None,
                       api_urls: dict = None, scrape_method: str = "browser",
-                      delivery_methods: list[str] = None) -> ScrapeResult:
+                      delivery_methods: list[str] = None,
+                      html_pricing: Optional[Dict[str, Dict[str, Any]]] = None) -> ScrapeResult:
         """Create a ScrapeResult from extracted data"""
         return ScrapeResult(
             event=event_info,
@@ -97,6 +98,7 @@ class BaseScraper(ABC):
             api_urls=api_urls,
             scrape_method=scrape_method,
             delivery_methods=delivery_methods,
+            html_pricing=html_pricing,
         )
 
     def parse_seat_status(self, status_str: str) -> SeatStatus:

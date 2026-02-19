@@ -61,7 +61,8 @@ class SeatsIOScraper(BaseScraper):
             self.add_warning("No rendering-info found — category assignment may be incomplete")
 
         # Step 5: Extract chart structure from charts/published response
-        chart_data = self._extract_chart_data(captured_responses)
+        # Pass rendering_info to help distinguish tables from GA areas
+        chart_data = self._extract_chart_data(captured_responses, rendering_info)
 
         # Step 6: Extract availability from object-statuses response
         availability = self._extract_availability(captured_responses)
@@ -72,13 +73,66 @@ class SeatsIOScraper(BaseScraper):
 
         if chart_data:
             seats, ticket_categories = self._build_seats(chart_data, availability, pricing, rendering_info, captured_responses)
-            # When chart has no rows (e.g. table/booth layout), build seats from object-statuses
+            # When chart has no rows (e.g. table/booth/couch layout), build seats from object-statuses
             if not seats and availability:
+                table_areas = chart_data.get('table_areas', [])
+                table_labels_in_chart = {ta.get('label') for ta in table_areas}
+                
                 seats = self._build_seats_from_object_statuses(
                     captured_responses, pricing,
                     chart_data.get('category_map', {}),
                     rendering_info,
                 )
+                
+                # Add missing tables/couches from chart that aren't in object-statuses
+                # These objects exist in the chart but may not have status yet (e.g., not yet on sale)
+                # Check ALL built seats (not just tables/couches) to avoid false positives like "Open Seating"
+                all_seats_built = {s.section for s in seats}
+                missing_tables = table_labels_in_chart - all_seats_built
+                
+                if missing_tables and table_areas:
+                    object_categories_lookup = {}
+                    category_by_key_lookup = {}
+                    if rendering_info:
+                        object_categories_lookup = rendering_info.get('objectCategories', {})
+                        category_by_key_lookup = rendering_info.get('category_by_key', {})
+                    
+                    for table_area in table_areas:
+                        table_label = table_area.get('label', '')
+                        if table_label in missing_tables:
+                            # Build seat for this missing table/couch
+                            category_label = None
+                            category_key = None
+                            
+                            # Get category from rendering-info
+                            if table_label in object_categories_lookup:
+                                cat_key = object_categories_lookup[table_label]
+                                if cat_key in category_by_key_lookup:
+                                    category_label = category_by_key_lookup[cat_key].get('label')
+                                    category_key = str(cat_key)
+                            
+                            # Get price for this category
+                            price, level_label = self._get_price_for_category(
+                                category_key, chart_data.get('category_map', {}), pricing, category_label
+                            )
+                            
+                            # Default to available if not in object-statuses (may be not yet on sale)
+                            seats.append(Seat(
+                                section=table_label,
+                                row='GA',
+                                seat='GA',
+                                price=price,
+                                status=SeatStatus.AVAILABLE,  # Default to available if not in object-statuses
+                                price_level=category_label or level_label or chart_data.get('category_map', {}).get(category_key or '', ''),
+                            ))
+                            object_type = "couch" if 'couch' in table_label.lower() else "table"
+                            logger.debug(f"added_missing_{object_type}_from_chart", label=table_label, category=category_label)
+                    
+                    logger.info("added_missing_tables_couches_from_chart", count=len(missing_tables))
+                
+                # Recalculate stock for ticket categories after building seats from object-statuses
+                if seats and ticket_categories:
+                    self._recalculate_ticket_category_stock(seats, ticket_categories)
         else:
             self.add_warning("No chart data found — trying fallback extraction from availability data")
             seats = self._build_seats_from_availability(availability, pricing)
@@ -100,6 +154,7 @@ class SeatsIOScraper(BaseScraper):
             ticket_categories=ticket_categories,
             api_urls=api_urls,
             scrape_method="browser",
+            html_pricing=pricing,
         )
 
     def _extract_pricing_from_html(self, page_html: str) -> Dict[str, Dict[str, Any]]:
@@ -235,12 +290,16 @@ class SeatsIOScraper(BaseScraper):
             logger.error("rendering_info_extraction_failed", error=str(e))
             return None
 
-    def _extract_chart_data(self, responses: list[CapturedResponse]) -> Optional[Dict[str, Any]]:
+    def _extract_chart_data(self, responses: list[CapturedResponse], rendering_info: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
         """
         Extract chart data from seats.io charts/published API.
 
+        Args:
+            responses: Captured API responses
+            rendering_info: Optional rendering-info to help distinguish tables from GA areas
+
         Returns:
-            Dict with 'category_map' and 'chart_seats', or None
+            Dict with 'category_map', 'chart_seats', 'ga_areas', and 'table_areas'
         """
         charts_response = self.find_response_by_pattern(responses, 'charts/published')
         if not charts_response:
@@ -258,6 +317,11 @@ class SeatsIOScraper(BaseScraper):
 
             chart_data = json.loads(decoded_json)
             
+            # Build lookup from rendering-info to distinguish tables from GA areas
+            object_categories = {}
+            if rendering_info:
+                object_categories = rendering_info.get('objectCategories', {})
+            
             # Extract category map
             category_map = {}
             categories = chart_data.get('categories', {})
@@ -269,6 +333,7 @@ class SeatsIOScraper(BaseScraper):
             # Extract seats from rows
             chart_seats = []
             ga_areas = []
+            table_areas = []  # Tables stored in generalAdmissionAreas
             
             # FIX: Support both subChart (single floor) and subChartFloors (multi-floor venues)
             venue_type = chart_data.get('venueType', '')
@@ -335,21 +400,39 @@ class SeatsIOScraper(BaseScraper):
                         section_rows = section_sub_chart.get('rows', [])
                         extract_seats_from_rows(section_rows, section_label)
                     
-                    # Extract GA areas from this floor
+                    # Extract GA areas from this floor (may include tables)
                     floor_ga_areas = floor.get('generalAdmissionAreas', [])
                     for ga in floor_ga_areas:
-                        if isinstance(ga, dict):
-                            ga_areas.append({
-                                'label': ga.get('label', ''),
-                                'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
-                                'uuid': ga.get('uuid', ''),
-                                'capacity': ga.get('capacity'),
-                            })
+                        if not isinstance(ga, dict):
+                            continue
+                        label = ga.get('label', '')
+                        # Use rendering-info to distinguish tables/couches from real GA areas
+                        # Tables/couches map to category 2 (or other non-GA categories), GA areas map to category 1
+                        is_table = False
+                        if label in object_categories:
+                            cat_key = object_categories[label]
+                            # Check if this is a table/couch category vs GA category (category 1)
+                            # Tables and couches are typically not category 1 (GA)
+                            if 'table' in label.lower() or 'couch' in label.lower() or (isinstance(cat_key, int) and cat_key != 1):
+                                is_table = True
+                        
+                        area_data = {
+                            'label': label,
+                            'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
+                            'uuid': ga.get('uuid', ''),
+                            'capacity': ga.get('capacity'),
+                        }
+                        
+                        if is_table:
+                            table_areas.append(area_data)
+                        else:
+                            ga_areas.append(area_data)
                 
                 logger.info("extracted_multi_floor_chart_data",
                            categories=len(category_map),
                            seats=len(chart_seats),
-                           ga_areas=len(ga_areas))
+                           ga_areas=len(ga_areas),
+                           table_areas=len(table_areas))
             else:
                 # Single-floor venue (original subChart logic)
                 sub_chart = chart_data.get('subChart', {})
@@ -409,26 +492,44 @@ class SeatsIOScraper(BaseScraper):
                     section_rows = section_sub_chart.get('rows', [])
                     extract_seats_from_rows(section_rows, section_label)
 
-                # Extract GA areas
+                # Extract GA areas (may include tables/couches)
                 general_admission_areas = sub_chart.get('generalAdmissionAreas', [])
                 for ga in general_admission_areas:
-                    if isinstance(ga, dict):
-                        ga_areas.append({
-                            'label': ga.get('label', ''),
-                            'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
-                            'uuid': ga.get('uuid', ''),
-                            'capacity': ga.get('capacity'),
-                        })
+                    if not isinstance(ga, dict):
+                        continue
+                    label = ga.get('label', '')
+                    # Use rendering-info to distinguish tables/couches from real GA areas
+                    is_table = False
+                    if label in object_categories:
+                        cat_key = object_categories[label]
+                        # Check if this is a table/couch category vs GA category (category 1)
+                        # Tables and couches are typically not category 1 (GA)
+                        if 'table' in label.lower() or 'couch' in label.lower() or (isinstance(cat_key, int) and cat_key != 1):
+                            is_table = True
+                    
+                    area_data = {
+                        'label': label,
+                        'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
+                        'uuid': ga.get('uuid', ''),
+                        'capacity': ga.get('capacity'),
+                    }
+                    
+                    if is_table:
+                        table_areas.append(area_data)
+                    else:
+                        ga_areas.append(area_data)
 
                 logger.info("extracted_chart_data",
                              categories=len(category_map),
                              seats=len(chart_seats),
-                             ga_areas=len(ga_areas))
+                             ga_areas=len(ga_areas),
+                             table_areas=len(table_areas))
 
             return {
                 'category_map': category_map,
                 'chart_seats': chart_seats,
                 'ga_areas': ga_areas,
+                'table_areas': table_areas,  # Tables stored in generalAdmissionAreas
             }
 
         except Exception as e:
@@ -994,6 +1095,38 @@ class SeatsIOScraper(BaseScraper):
             return first.get('price', Decimal('0')), first.get('label')
 
         return Decimal('0'), None
+
+    def _recalculate_ticket_category_stock(self, seats: List[Seat], ticket_categories: List[TicketCategory]):
+        """
+        Recalculate current_stock for ticket categories based on available seats.
+        
+        This is needed when seats are built from object-statuses separately from ticket categories.
+        """
+        from collections import Counter
+        
+        # Count available seats by price_level (which is the category label)
+        available_by_category = Counter(
+            seat.price_level for seat in seats
+            if seat.status == SeatStatus.AVAILABLE
+        )
+        
+        # Count booked seats by category
+        booked_by_category = Counter(
+            seat.price_level for seat in seats
+            if seat.status in (SeatStatus.BOOKED, SeatStatus.HELD)
+        )
+        
+        # Update ticket_categories with seat counts
+        for cat in ticket_categories:
+            if cat.current_stock is None:  # Only update if stock wasn't set (non-GA categories)
+                cat.current_stock = available_by_category.get(cat.category_name, 0)
+                
+                # Update is_out_of_stock if we have booked seats but no available seats
+                if cat.current_stock == 0 and booked_by_category.get(cat.category_name, 0) > 0:
+                    cat.is_out_of_stock = True
+        
+        logger.info("recalculated_ticket_category_stock", 
+                   categories_updated=sum(1 for cat in ticket_categories if cat.current_stock is not None))
 
     def _extract_ga_categories_from_html(self, page_html: str,
                                           pricing: Dict[str, Dict[str, Any]],

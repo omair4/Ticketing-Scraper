@@ -150,6 +150,7 @@ class ScrapeResult(BaseModel):
     api_urls: Optional[Dict[str, Any]] = Field(default=None, description="Discovered API URLs for direct re-querying")
     scrape_method: str = Field(default="browser", description="browser or html_parse")
     delivery_methods: Optional[List[str]] = Field(default=None, description="Available delivery methods")
+    html_pricing: Optional[Dict[str, Dict[str, Any]]] = Field(default=None, description="Pricing data extracted from page HTML (seatsio scenario only)")
 
     # Errors/warnings
     errors: List[str] = Field(default_factory=list)
