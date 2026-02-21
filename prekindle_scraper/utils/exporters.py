@@ -52,6 +52,9 @@ def export_to_json(result: ScrapeResult, output_dir: str = "./output") -> str:
 
     data = result.model_dump(mode='json')
     data = _convert_for_json(data)
+    # Ensure delivery_methods is always present in output
+    if 'delivery_methods' not in data or data['delivery_methods'] is None:
+        data['delivery_methods'] = []
 
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False, default=str)
@@ -70,6 +73,7 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
     filename = generate_filename(result.event.event_name, "csv")
     filepath = output_path / filename
 
+    delivery_str = ', '.join(result.delivery_methods) if result.delivery_methods else ''
     fieldnames = [
         'type',
         'category_name',
@@ -90,7 +94,8 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
         'ticket_type',
         'event_name',
         'venue',
-        'event_date'
+        'event_date',
+        'delivery_methods',
     ]
 
     with open(filepath, 'w', newline='', encoding='utf-8') as f:
@@ -118,7 +123,8 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
                 'ticket_type': '',
                 'event_name': result.event.event_name,
                 'venue': result.event.venue_name,
-                'event_date': result.event.event_date or ''
+                'event_date': result.event.event_date or '',
+                'delivery_methods': delivery_str,
             })
 
         for category in result.ticket_categories:
@@ -142,7 +148,8 @@ def export_to_csv(result: ScrapeResult, output_dir: str = "./output") -> str:
                 'ticket_type': category.ticket_type or '',
                 'event_name': result.event.event_name,
                 'venue': result.event.venue_name,
-                'event_date': result.event.event_date or ''
+                'event_date': result.event.event_date or '',
+                'delivery_methods': delivery_str,
             })
 
     total_items = len(result.seats) + len(result.ticket_categories)

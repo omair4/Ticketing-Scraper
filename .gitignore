@@ -184,6 +184,7 @@ links.txt
 # Project output and generated docs
 docs/
 output/
+output2/
 website_scraper/discovery/graphql_response_log.json
 outputtemp/
 ouputtemp/

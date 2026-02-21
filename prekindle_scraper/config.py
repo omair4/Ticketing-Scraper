@@ -39,7 +39,7 @@ class ScraperConfig:
     )
 
     # PreKindle-specific
-    search_api_url: str = "https://web.prekindle.com/api/event/search"
+    search_api_url: str = "https://web.prekindle.com/api/v1/event/search"
     search_limit: int = 100
     timezone: str = "America/New_York"
     discovery_request_delay: float = 1.0  # seconds between paginated requests
