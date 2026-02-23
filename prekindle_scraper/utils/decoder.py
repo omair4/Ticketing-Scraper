@@ -105,6 +105,16 @@ def decode_seatsio_response(response_text: str) -> Optional[str]:
         except Exception:
             pass
 
+    # Try 4: Raw binary (e.g. when fetched with .content.decode('latin-1'))
+    try:
+        if response_text and all(ord(c) < 256 for c in response_text):
+            raw_bytes = response_text.encode('latin-1')
+            result = _bruteforce_offset_decode(raw_bytes, source="binary")
+            if result:
+                return result[0]
+    except Exception:
+        pass
+
     return None
 
 
@@ -125,7 +135,8 @@ def decode_charts_response(response_text: str) -> Optional[str]:
 
     # Try 2: Hex offset decode with bruteforce
     cleaned = response_text.strip()
-    if all(c in '0123456789abcdefABCDEF' for c in cleaned):
+    is_all_hex = all(c in '0123456789abcdefABCDEF' for c in cleaned)
+    if is_all_hex:
         try:
             encoded_bytes = bytes.fromhex(cleaned)
             result = _bruteforce_offset_decode(encoded_bytes, source="hex")
@@ -140,6 +151,17 @@ def decode_charts_response(response_text: str) -> Optional[str]:
         if any(c in response_text for c in '+/=') or len(response_text) > 1000:
             binary_data = base64.b64decode(response_text)
             result = _bruteforce_offset_decode(binary_data, source="base64")
+            if result:
+                return result[0]
+    except Exception:
+        pass
+
+    # Try 4: Raw binary (e.g. chart response when fetched with .content.decode('latin-1'))
+    # Body may be offset-encoded bytes passed as string; recover bytes and bruteforce.
+    try:
+        if response_text and all(ord(c) < 256 for c in response_text):
+            raw_bytes = response_text.encode('latin-1')
+            result = _bruteforce_offset_decode(raw_bytes, source="binary")
             if result:
                 return result[0]
     except Exception:

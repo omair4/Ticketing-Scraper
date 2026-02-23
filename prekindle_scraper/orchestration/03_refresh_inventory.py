@@ -50,8 +50,8 @@ structlog.configure(
 import logging
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 
-from models import ScrapeResult, EventInfo, Seat, TicketCategory, SeatStatus
-from utils.decoder import decode_seatsio_response
+from models import ScrapeResult, EventInfo, Seat, SeatStatus
+from browser import CapturedResponse
 from utils.exporters import export_results
 from orchestration.config import OrchestrationConfig, DEFAULT_ORCHESTRATION_CONFIG
 
@@ -123,71 +123,102 @@ class InventoryRefresher:
                 if not all([object_statuses_url, chart_url, rendering_info_url]):
                     raise Exception("Missing required API URLs")
 
-                responses = await asyncio.gather(
+                http_responses = await asyncio.gather(
                     httpx_client.get(object_statuses_url, timeout=30.0),
                     httpx_client.get(chart_url, timeout=30.0),
                     httpx_client.get(rendering_info_url, timeout=30.0),
                 )
 
-                # Step 3: Decode responses
-                object_statuses_data = decode_seatsio_response(responses[0].text)
-                chart_data = decode_seatsio_response(responses[1].text)
-                rendering_info = responses[2].json()  # Plain JSON
+                # Step 3: Wrap raw HTTP responses as CapturedResponse objects
+                # Object-statuses and chart can be binary (offset-encoded); use .content decoded as latin-1
+                # so we don't corrupt bytes with UTF-8 replacement chars (U+FFFD).
+                object_statuses_body = http_responses[0].content.decode('latin-1')
+                chart_body = http_responses[1].content.decode('latin-1')
+                captured_responses = [
+                    CapturedResponse(
+                        url=str(http_responses[0].url),
+                        status=http_responses[0].status_code,
+                        content_type=http_responses[0].headers.get('content-type', ''),
+                        body=object_statuses_body,
+                    ),
+                    CapturedResponse(
+                        url=str(http_responses[1].url),
+                        status=http_responses[1].status_code,
+                        content_type=http_responses[1].headers.get('content-type', ''),
+                        body=chart_body,
+                    ),
+                    CapturedResponse(
+                        url=str(http_responses[2].url),
+                        status=http_responses[2].status_code,
+                        content_type=http_responses[2].headers.get('content-type', ''),
+                        body=http_responses[2].text,
+                    ),
+                ]
 
-                # Step 4: Rebuild seats using logic similar to seatsio_scraper
-                # Import the scraper to reuse parsing logic
+                # Step 4: Reuse the full SeatsIOScraper extraction pipeline
                 from scrapers.seatsio_scraper import SeatsIOScraper
                 scraper = SeatsIOScraper()
 
-                # Parse availability
-                availability = {}
-                if object_statuses_data and 'objects' in object_statuses_data:
-                    for obj_id, obj_data in object_statuses_data['objects'].items():
-                        status = obj_data.get('status', 'available')
-                        # Map seatsio status to our SeatStatus enum
-                        if status == 'free':
-                            availability[obj_id] = SeatStatus.AVAILABLE
-                        elif status == 'booked':
-                            availability[obj_id] = SeatStatus.BOOKED
-                        elif status in ['hold', 'held']:
-                            availability[obj_id] = SeatStatus.HELD
-                        else:
-                            availability[obj_id] = SeatStatus.UNKNOWN
+                rendering_info = scraper._extract_rendering_info(captured_responses)
+                chart_data = scraper._extract_chart_data(captured_responses, rendering_info)
+                availability = scraper._extract_availability(captured_responses)
 
-                # Parse chart structure - reuse scraper's private method
-                # We'll create a minimal chart_data dict that matches the scraper's expectations
-                chart_parsed = {
-                    'rows': [],
-                    'ga_areas': [],
-                    'table_areas': [],
-                    'sections': []
-                }
-
-                # Parse chart structure
-                if chart_data:
-                    if 'rows' in chart_data:
-                        chart_parsed['rows'] = chart_data.get('rows', [])
-                    if 'generalAdmissionAreas' in chart_data:
-                        chart_parsed['ga_areas'] = chart_data.get('generalAdmissionAreas', [])
-                    if 'tables' in chart_data:
-                        chart_parsed['table_areas'] = chart_data.get('tables', [])
-                    if 'booths' in chart_data:
-                        chart_parsed['table_areas'].extend(chart_data.get('booths', []))
-                    if 'sections' in chart_data:
-                        chart_parsed['sections'] = chart_data.get('sections', [])
-
-                # Build seats - we need to reconstruct this from the data
                 seats = []
                 ticket_categories = []
 
-                # Use scraper's build_seats method (we'll need to adapt this)
-                # For now, implement simplified version
-                seats, ticket_categories = await self._build_refreshed_seats(
-                    chart_parsed,
-                    availability,
-                    html_pricing,
-                    rendering_info
-                )
+                if chart_data:
+                    seats, ticket_categories = scraper._build_seats(
+                        chart_data, availability, html_pricing,
+                        rendering_info, captured_responses
+                    )
+                    if not seats and availability:
+                        seats = scraper._build_seats_from_object_statuses(
+                            captured_responses, html_pricing,
+                            chart_data.get('category_map', {}),
+                            rendering_info,
+                        )
+
+                        table_areas = chart_data.get('table_areas', [])
+                        table_labels_in_chart = {ta.get('label') for ta in table_areas}
+                        all_seats_built = {s.section for s in seats}
+                        missing_tables = table_labels_in_chart - all_seats_built
+
+                        if missing_tables and table_areas:
+                            object_categories_lookup = {}
+                            category_by_key_lookup = {}
+                            if rendering_info:
+                                object_categories_lookup = rendering_info.get('objectCategories', {})
+                                category_by_key_lookup = rendering_info.get('category_by_key', {})
+
+                            for table_area in table_areas:
+                                table_label = table_area.get('label', '')
+                                if table_label in missing_tables:
+                                    category_label = None
+                                    category_key = None
+
+                                    if table_label in object_categories_lookup:
+                                        cat_key = object_categories_lookup[table_label]
+                                        if cat_key in category_by_key_lookup:
+                                            category_label = category_by_key_lookup[cat_key].get('label')
+                                            category_key = str(cat_key)
+
+                                    price, level_label = scraper._get_price_for_category(
+                                        category_key, chart_data.get('category_map', {}), html_pricing, category_label
+                                    )
+
+                                    seats.append(Seat(
+                                        section=table_label,
+                                        row='GA',
+                                        seat='GA',
+                                        price=price,
+                                        status=SeatStatus.AVAILABLE,
+                                        price_level=category_label or level_label or chart_data.get('category_map', {}).get(category_key or '', ''),
+                                    ))
+
+                            logger.info("added_missing_tables_from_chart", count=len(missing_tables))
+
+                        if seats and ticket_categories:
+                            scraper._recalculate_ticket_category_stock(seats, ticket_categories)
 
                 # Step 5: Create refreshed result
                 event_info = EventInfo(**prev_data['event'])
@@ -220,101 +251,6 @@ class InventoryRefresher:
                              error=str(e))
                 self.total_failed += 1
                 return None
-
-    async def _build_refreshed_seats(
-        self,
-        chart_data: Dict[str, Any],
-        availability: Dict[str, SeatStatus],
-        html_pricing: Optional[Dict],
-        rendering_info: Optional[Dict]
-    ):
-        """
-        Simplified seat building for refresh (reuses pricing from original scrape).
-
-        This is a simplified version - for production, we'd import and reuse
-        the full SeatsIOScraper._build_seats() method.
-        """
-        seats = []
-        ticket_categories = []
-
-        # Build category mappings from rendering_info
-        category_map = {}
-        category_by_key = {}
-
-        if rendering_info:
-            category_map = rendering_info.get('objectCategories', {})
-
-            # Build category_by_key lookup
-            for cat in rendering_info.get('categories', []):
-                key = cat.get('key')
-                if key:
-                    category_by_key[key] = cat
-
-        # Process rows (individual seats)
-        for row_data in chart_data.get('rows', []):
-            section_label = row_data.get('sectionLabel', '')
-            row_label = row_data.get('label', '')
-
-            for seat_data in row_data.get('seats', []):
-                seat_label = seat_data.get('label', '')
-                seat_uuid = seat_data.get('uuid', '')
-
-                # Build composite label for status lookup
-                composite_label = f"{section_label}-{row_label}-{seat_label}"
-
-                # Try different label formats
-                status = (
-                    availability.get(composite_label) or
-                    availability.get(f"{section_label} {row_label}-{seat_label}") or
-                    availability.get(seat_label) or
-                    SeatStatus.AVAILABLE  # Default
-                )
-
-                # Get category and price
-                category_key = category_map.get(composite_label) or category_map.get(seat_label)
-                category_info = category_by_key.get(category_key, {}) if category_key else {}
-                category_label = category_info.get('label', '')
-
-                # Lookup price from html_pricing
-                price_data = html_pricing.get(category_label, {}) if html_pricing else {}
-                price = price_data.get('price', 0)
-
-                seat = Seat(
-                    section=section_label,
-                    row=row_label,
-                    seat=seat_label,
-                    price=price,
-                    status=status,
-                    price_level=category_label,
-                    x=seat_data.get('x'),
-                    y=seat_data.get('y'),
-                    ada=category_info.get('accessible', False)
-                )
-                seats.append(seat)
-
-        # Process GA areas
-        for ga_area in chart_data.get('ga_areas', []):
-            area_label = ga_area.get('label', '')
-            capacity = ga_area.get('capacity', 0)
-
-            # Get category and price
-            category_key = category_map.get(area_label)
-            category_info = category_by_key.get(category_key, {}) if category_key else {}
-            category_label = category_info.get('label', area_label)
-
-            price_data = html_pricing.get(category_label, {}) if html_pricing else {}
-            price = price_data.get('price', 0)
-
-            category = TicketCategory(
-                category_name=area_label,
-                category_id=category_key or area_label,
-                price=price,
-                current_stock=capacity,
-                is_out_of_stock=False
-            )
-            ticket_categories.append(category)
-
-        return seats, ticket_categories
 
     async def refresh_batch(self, result_files: list[Path]):
         """Refresh a batch of events"""
