@@ -90,13 +90,13 @@ async def discover_events(
     logger.info("SCRIPT 1: TIXR EVENT DISCOVERY")
     logger.info("=" * 60)
 
-    # Step 1: Parse sitemaps
-    sitemap_client = SitemapClient()
-    group_slugs = await sitemap_client.fetch_group_slugs()
-    logger.info("sitemap_complete", groups=len(group_slugs))
-
-    # Step 2: Crawl groups
     async with BrowserAutomation(scraper_config) as browser:
+        # Step 1: Parse sitemaps (via browser to bypass DataDome)
+        sitemap_client = SitemapClient(browser)
+        group_slugs = await sitemap_client.fetch_group_slugs()
+        logger.info("sitemap_complete", groups=len(group_slugs))
+
+        # Step 2: Crawl groups
         crawler = GroupCrawler(browser, scraper_config)
         events = await crawler.crawl_groups(group_slugs, max_groups=max_groups)
 

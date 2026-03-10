@@ -71,7 +71,7 @@ Detection is automatic based on the `/api/events/{id}` response.
 
 ```
 discover.py / orchestration/01_discover.py
-  → SitemapClient: parse sitemap.xml → group slugs (plain HTTP, no browser)
+  → SitemapClient: parse sitemap.xml → group slugs (via Playwright browser)
   → GroupCrawler (Playwright): navigate to each group page
     → intercept /api/groups/{id}/events → event list
   → deduplicate → save to JSON + initialize StateManager
@@ -226,7 +226,7 @@ tixr_scraper/
 
 - Python 3.9+
 - Playwright (Chromium) — browser automation
-- httpx — HTTP client (sitemaps, seats.io refresh)
+- httpx — HTTP client (seats.io refresh)
 - Pydantic v2 — data models and validation
 - structlog — structured logging
 - tenacity — retry logic

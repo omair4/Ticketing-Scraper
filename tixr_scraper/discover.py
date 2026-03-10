@@ -90,19 +90,18 @@ async def discover_events(
     logger.info("TIXR EVENT DISCOVERY")
     logger.info("=" * 60)
 
-    # Step 1: Discover group slugs from sitemaps
-    logger.info("step_1", description="Parsing sitemaps for group slugs...")
-    sitemap_client = SitemapClient()
-    group_slugs = await sitemap_client.fetch_group_slugs()
-
-    print(f"\nFound {len(group_slugs)} group slugs from sitemaps")
-    if max_groups:
-        print(f"Limiting to first {max_groups} groups")
-
-    # Step 2: Crawl groups to get events
-    logger.info("step_2", description="Crawling group pages for events...")
-
     async with BrowserAutomation(config) as browser:
+        # Step 1: Discover group slugs from sitemaps (via browser to bypass DataDome)
+        logger.info("step_1", description="Parsing sitemaps for group slugs...")
+        sitemap_client = SitemapClient(browser)
+        group_slugs = await sitemap_client.fetch_group_slugs()
+
+        print(f"\nFound {len(group_slugs)} group slugs from sitemaps")
+        if max_groups:
+            print(f"Limiting to first {max_groups} groups")
+
+        # Step 2: Crawl groups to get events
+        logger.info("step_2", description="Crawling group pages for events...")
         crawler = GroupCrawler(browser, config)
         events = await crawler.crawl_groups(group_slugs, max_groups=max_groups)
 

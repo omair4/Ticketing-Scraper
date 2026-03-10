@@ -324,10 +324,10 @@ priority_offsets = [
 
 ### Step 1: Sitemap Parsing (`discovery/sitemap_client.py`)
 
-**No browser needed** — tixr.com sitemaps are accessible via plain HTTP.
+**Uses Playwright browser** — DataDome blocks plain HTTP requests to tixr.com.
 
 ```
-1. Fetch https://www.tixr.com/sitemap.xml → sitemap index
+1. Navigate to https://www.tixr.com/sitemap.xml via browser → sitemap index
 2. Find group-sitemap-*.xml URLs
 3. For each group sitemap:
    - Parse XML

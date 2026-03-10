@@ -2,15 +2,14 @@
 Sitemap parser for Tixr group discovery.
 
 Fetches sitemap.xml and group-sitemap-*.xml to extract all group slugs.
-No browser needed — sitemaps are accessible via plain HTTP.
+Uses Playwright browser to bypass DataDome protection on tixr.com.
 """
 
+import asyncio
 import re
 from typing import List
 from xml.etree import ElementTree
 import structlog
-import httpx
-from tenacity import retry, stop_after_attempt, wait_exponential
 
 from config import SITEMAP_URLS, SITEMAP_INDEX_URL
 
@@ -23,16 +22,63 @@ SITEMAP_NS = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
 class SitemapClient:
     """Parses tixr.com sitemaps to discover group slugs."""
 
-    def __init__(self, timeout: int = 30):
-        self.timeout = timeout
+    def __init__(self, browser):
+        self.browser = browser
 
-    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-    async def _fetch_xml(self, url: str) -> str:
-        """Fetch XML content from URL with retry."""
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-            return response.text
+    async def _fetch_xml(self, url: str, max_retries: int = 3) -> str:
+        """Fetch XML content via Playwright page navigation with retry."""
+        for attempt in range(max_retries):
+            try:
+                await self.browser.page.goto(url, wait_until='domcontentloaded', timeout=30000)
+                await asyncio.sleep(3)  # DataDome challenge time
+
+                # Check for DataDome block
+                if await self.browser._is_datadome_blocked():
+                    logger.warning("datadome_on_sitemap", url=url, attempt=attempt)
+                    await asyncio.sleep(5)
+                    continue
+
+                # Browsers render XML differently — try multiple extraction methods
+                content = await self.browser.page.content()
+
+                # Method 1: Check if page content has XML directly
+                if '<urlset' in content or '<sitemapindex' in content:
+                    # Extract XML from the HTML wrapper browsers add
+                    xml_text = await self.browser.page.evaluate(
+                        '() => new XMLSerializer().serializeToString(document)'
+                    )
+                    if '<urlset' in xml_text or '<sitemapindex' in xml_text:
+                        return xml_text
+
+                # Method 2: Some browsers show XML in a <pre> tag
+                pre_text = await self.browser.page.evaluate(
+                    '() => { const pre = document.querySelector("pre"); return pre ? pre.textContent : null; }'
+                )
+                if pre_text and ('<urlset' in pre_text or '<sitemapindex' in pre_text):
+                    return pre_text
+
+                # Method 3: Get body innerText (loses tags but check anyway)
+                inner_text = await self.browser.page.evaluate('() => document.body.innerText')
+                if inner_text and ('<urlset' in inner_text or '<sitemapindex' in inner_text):
+                    return inner_text
+
+                # Method 4: Fall back to full page content
+                if '<loc>' in content:
+                    return content
+
+                logger.warning("sitemap_no_xml_found", url=url, attempt=attempt,
+                              content_length=len(content))
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(3)
+
+            except Exception as e:
+                logger.warning("sitemap_fetch_error", url=url, attempt=attempt, error=str(e))
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(3)
+                else:
+                    raise
+
+        raise RuntimeError(f"Failed to fetch sitemap XML from {url} after {max_retries} attempts")
 
     async def discover_sitemap_urls(self) -> List[str]:
         """
