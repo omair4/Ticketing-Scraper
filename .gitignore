@@ -179,3 +179,12 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+links.txt
+
+# Project output and generated docs
+docs/
+output/
+output2/
+website_scraper/discovery/graphql_response_log.json
+outputtemp/
+ouputtemp/
