@@ -1,4 +1,178 @@
-# MGM Resorts Scraper — Findings & Implementation Plan
+# MGM Resorts Scraper
+
+---
+
+## Setup
+
+```bash
+cd mgmresorts-scraper
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+No browser automation needed — all data comes from the MGM GraphQL API directly.
+
+### Proxy (optional)
+
+Set `PROXY_URL` at the top of `test_local.py` if you want to route requests through a proxy:
+
+```python
+PROXY_URL = "http://user:pass@host:port"   # or None to disable
+```
+
+---
+
+## Running locally (`test_local.py`)
+
+All commands print to stdout. No DB or Lambda dependencies.
+
+```bash
+python test_local.py shows
+python test_local.py schedule <show_id>
+python test_local.py inventory <event_id> [property_id]
+python test_local.py full <show_id>
+```
+
+### `shows` — list all MGM shows
+
+```bash
+python test_local.py shows
+```
+
+Calls `GetShowProperties` and prints every show slug with its property ID.
+
+---
+
+### `schedule` — event schedule for a show
+
+```bash
+python test_local.py schedule ka-by-cirque-du-soleil
+python test_local.py schedule o-by-cirque-du-soleil
+python test_local.py schedule fantasy
+```
+
+Fetches upcoming events for the given show slug. Prints the next 10 dates with event IDs and lowest prices, then returns the full list.
+
+---
+
+### `inventory` — seat inventory for one event
+
+```bash
+python test_local.py inventory Event_4801603
+python test_local.py inventory Event_4801603 66964e2b-2550-4476-84c3-1a4c0c5c067f
+```
+
+Calls `GetSeatsAvailability` and prints:
+- Section summary (count + starting price)
+- Price code definitions
+- Expanded seat DataFrame (section / row / seat_number / price / seat_pattern)
+
+`property_id` defaults to MGM Grand (`66964e2b-2550-4476-84c3-1a4c0c5c067f`) if omitted.
+
+---
+
+### `full` — show → first upcoming event → inventory
+
+```bash
+python test_local.py full ka-by-cirque-du-soleil
+python test_local.py full michael-jackson-one
+```
+
+Runs `schedule` then immediately runs `inventory` for the first upcoming event. The most convenient end-to-end test.
+
+---
+
+## Lambda functions
+
+Five Lambda functions run in sequence via Step Functions.
+
+### `mgmresorts_show_discovery.py` — Lambda 1
+
+**Trigger:** daily schedule
+**Input:** `{}`
+
+Discovers all MGM shows via the GraphQL API and populates `event_discovery`.
+
+1. `GET` anonymous bearer token from the MGM auth endpoint
+2. GraphQL `GetShowProperties` → list of `{ id (show_slug), propertyId }`
+3. GraphQL `GetShow(showId)` for each → name, venue, address, booking URL
+4. Classifies each show as `mgm_internal` (has internal booking page) or `unknown`
+5. Upserts all shows into `event_discovery`
+
+**Output:** `{ num_shows: N }`
+
+---
+
+### `mgmresorts_provide_schedule_params_list.py` — Lambda 2
+
+**Trigger:** before schedule refresh (Step Function input generator)
+**Input:** `{ start_date? }` (defaults to today)
+
+Reads all active `mgm_internal` shows from `event_discovery` and returns one payload per show for the `mgmresorts_event_schedule` Lambda Map state.
+
+**Output:** `[{ show_id, property_id, show_name, venue_name, booking_url, start_date }, ...]`
+
+---
+
+### `mgmresorts_event_schedule.py` — Lambda 3
+
+**Trigger:** Step Function Map (one invocation per show)
+**Input:** `{ show_id, property_id, start_date? }`
+
+Fetches all upcoming event dates for a single show and upserts them into `event_schedule`.
+
+1. GraphQL `GetShowEventsView` paginated until empty (page size 50)
+2. Each event: `eventId`, `eventDate`, `eventTime`, `eventCode`, `lowestPrice`, `offerAvailable`
+3. Upserts into `event_schedule` (`ON DUPLICATE KEY UPDATE` lowest_price, offer_available)
+
+**Output:** `{ show_id, num_events: N }`
+
+---
+
+### `mgmresorts_provide_inventory_params_list.py` — Lambda 4
+
+**Trigger:** before inventory run (Step Function input generator)
+**Input:** `{ days_ahead?: 30, time_frame?: 0 }`
+
+Joins `event_schedule` with `event_discovery` to build one inventory payload per upcoming event within `days_ahead`.
+
+**Output:** `[{ eventId, property_id, event_name, venue_name, event_datetime, ticket_url, time_frame }, ...]`
+
+---
+
+### `event_inventory_main.py` — Lambda 5
+
+**Trigger:** Step Function Map (one invocation per event)
+**Input (inventory mode):** `{ eventId, property_id, event_name, venue_name, event_datetime, ticket_url, time_frame }`
+**Input (existence check mode):** `{ mode: "existence_check", eId, property_id, url, e_name, v_name, date, scraper_type, listing_info }`
+
+Fetches full seat-level inventory for one event via `GetSeatsAvailability`, expands seat ranges into individual rows, and uploads to `event_inventory`.
+
+Existence check mode skips the DB upload and instead returns `{ exists: bool, runs: {...} }` based on section / price / row / quantity rules.
+
+**Output (inventory):** `{ rows: N, scraper_type, eventId }`
+**Output (existence check):** `{ mode: "existence_check", exists: bool, runs, all_matching_seats, ... }`
+
+---
+
+## Step Function pipeline
+
+```
+mgmresorts_show_discovery          (daily — populates event_discovery)
+        ↓
+mgmresorts_provide_schedule_params_list
+        ↓  (Map)
+mgmresorts_event_schedule          (one per show — populates event_schedule)
+        ↓
+mgmresorts_provide_inventory_params_list
+        ↓  (Map)
+event_inventory_main               (one per event — populates event_inventory)
+```
+
+---
+
+## Architecture overview
 
 ## Overview
 
