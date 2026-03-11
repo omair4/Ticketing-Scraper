@@ -19,10 +19,19 @@ Examples:
 
 import sys
 import json
-import requests
+import asyncio
 import pandas as pd
 from datetime import date
 from pprint import pprint
+
+# curl-cffi impersonates Chrome's TLS fingerprint — required for MGM's Akamai bot protection.
+# Falls back to standard requests if not installed (works in Lambda where proxy bypasses checks).
+try:
+    from curl_cffi import requests
+    _IMPERSONATE = "chrome120"
+except ImportError:
+    import requests  # type: ignore[no-redef]
+    _IMPERSONATE = None
 
 # ─── Endpoints ────────────────────────────────────────────────────────────────
 GRAPHQL_URL = "https://api.mgmresorts.com/graphql-next"
@@ -35,23 +44,80 @@ PROXIES   = {"http": PROXY_URL, "https": PROXY_URL} if PROXY_URL else None
 
 # ─── Auth ─────────────────────────────────────────────────────────────────────
 
-def get_token():
-    resp = requests.get(AUTH_URL, proxies=PROXIES, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    token = data.get("token") or data.get("access_token") or data.get("id_token")
-    if not token:
-        # Try nested structures
-        for v in data.values():
+async def _get_token_via_browser():
+    """Fetch anonymous token via a headed browser + JS fetch.
+
+    MGM's bot detection (Akamai) blocks headless Chromium's TLS fingerprint.
+    Running headed (headless=False) passes the check. After navigating to mgmresorts.com,
+    we call the auth endpoint via page.evaluate() which runs inside the trusted browser context.
+    """
+    from playwright.async_api import async_playwright
+
+    async with async_playwright() as p:
+        # headless=False is required — headless Chromium is detected and blocked by Akamai.
+        browser = await p.chromium.launch(headless=False)
+        try:
+            context = await browser.new_context()
+            page = await context.new_page()
+            # Navigate to the lightweight homepage shell; cookies + CORS context are set here.
+            await page.goto("https://www.mgmresorts.com/", wait_until="commit", timeout=60000)
+            # Fetch the token from within the trusted browser context (bypasses CORS + bot checks).
+            body = await page.evaluate(f"""async () => {{
+                const resp = await fetch('{AUTH_URL}');
+                if (!resp.ok) throw new Error('Auth endpoint HTTP ' + resp.status);
+                return await resp.json();
+            }}""")
+            await context.close()
+        finally:
+            await browser.close()
+
+    token = body.get("access_token") or body.get("token") or body.get("id_token")
+    if not token and isinstance(body, dict):
+        for v in body.values():
             if isinstance(v, str) and len(v) > 50:
                 token = v
                 break
     if not token:
-        print("Auth response keys:", list(data.keys()))
-        print("Full response:", json.dumps(data, indent=2)[:500])
-        raise ValueError("Could not find token in auth response")
-    print(f"[auth] Got token: {token[:40]}...")
+        raise ValueError(f"Playwright: no token in auth response. Keys: {list(body.keys())}")
     return token
+
+
+def get_token():
+    auth_timeout = 25
+    auth_headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept": "application/json",
+        "Origin": "https://mgmgrand.mgmresorts.com",
+        "Referer": "https://mgmgrand.mgmresorts.com/",
+    }
+    _extra = {"impersonate": _IMPERSONATE} if _IMPERSONATE else {}
+    try:
+        resp = requests.get(AUTH_URL, headers=auth_headers, proxies=PROXIES, timeout=auth_timeout, **_extra)
+        resp.raise_for_status()
+        data = resp.json()
+        token = data.get("token") or data.get("access_token") or data.get("id_token")
+        if not token:
+            # Try nested structures
+            for v in data.values():
+                if isinstance(v, str) and len(v) > 50:
+                    token = v
+                    break
+        if not token:
+            print("Auth response keys:", list(data.keys()))
+            print("Full response:", json.dumps(data, indent=2)[:500])
+            raise ValueError("Could not find token in auth response")
+        print(f"[auth] Got token: {token[:40]}...")
+        return token
+    except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError,
+            requests.exceptions.SSLError, requests.exceptions.HTTPError) as e:
+        try:
+            token = asyncio.run(_get_token_via_browser())
+            print(f"[auth] Got token via browser: {token[:40]}...")
+            return token
+        except Exception as e2:
+            raise e2 from e
+    except Exception as e:
+        raise
 
 
 def gql(query, variables, operation_name, token):
@@ -63,7 +129,8 @@ def gql(query, variables, operation_name, token):
         "Referer": "https://www.mgmresorts.com/",
     }
     payload = {"query": query, "variables": variables, "operationName": operation_name}
-    resp = requests.post(GRAPHQL_URL, json=payload, headers=headers, proxies=PROXIES, timeout=30)
+    _extra = {"impersonate": _IMPERSONATE} if _IMPERSONATE else {}
+    resp = requests.post(GRAPHQL_URL, json=payload, headers=headers, proxies=PROXIES, timeout=30, **_extra)
     resp.raise_for_status()
     data = resp.json()
     if "errors" in data:
