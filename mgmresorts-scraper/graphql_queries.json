@@ -1,0 +1,174 @@
+{
+  "api_endpoint": "https://api.mgmresorts.com/graphql-next",
+  "auth_endpoint": "https://identityapi.mgmresorts.com/identity/authorization/v2/anon/user/token",
+  "contentstack_endpoint": "https://graphql.contentstack.com/stacks/blt4d71e9534fa5b5bf/?environment=production",
+
+  "queries": {
+    "GetShowProperties": {
+      "description": "Catalog — All shows (show_id + propertyId) across all MGM properties. Entry point for discovery.",
+      "operationName": "GetShowProperties",
+      "query": "query GetShowProperties { getShows { id propertyId } }",
+      "variables": {}
+    },
+
+    "GetShow": {
+      "description": "Show detail — name, descriptions, images, property info, dark dates, seasons.",
+      "operationName": "GetShow",
+      "query": "query GetShow($showId: String, $eventId: String) {\n  show(id: $showId, eventId: $eventId) {\n    id\n    ageRequirements\n    allDayEvent\n    arenaTheater { name boxOfficeHours { description time } location { address } }\n    bookingFlowGroupReservation\n    darkDates\n    descriptions { appCard overview learnMore long secondary short tagline }\n    images {\n      tile { url metadata { description } }\n      overview { url metadata { description height width } }\n      detailPageHeroGallery { type reference { url } caption }\n    }\n    name\n    productCategory\n    property {\n      id name\n      location { address latitude longitude }\n    }\n    seasons { id displayName seatMap { seatingType } termsConditionsFormatted }\n    lastAdmissionTime\n    guestReminderMessage { heading description }\n  }\n}",
+      "variables": {
+        "showId": "ka-by-cirque-du-soleil"
+      }
+    },
+
+    "GetShowEventsView": {
+      "description": "Event schedule — paginated list of upcoming events for a show with dates, times, lowestPrice, eventId.",
+      "operationName": "GetShowEventsView",
+      "query": "query GetShowEventsView($endDate: String, $limit: Int!, $offset: Int!, $propertyId: String!, $showId: String!, $startDate: String!) {\n  showBooking {\n    eventsViewForShow(queryParams: {\n      endDate: $endDate, limit: $limit, offset: $offset,\n      propertyId: $propertyId, showId: $showId, startDate: $startDate\n    }) {\n      events {\n        eventDate\n        eventTime\n        eventId\n        eventCode\n        seasonId\n        offerAvailable\n        lowestPrice\n      }\n      lastUpdated\n    }\n  }\n}",
+      "variables": {
+        "showId": "ka-by-cirque-du-soleil",
+        "propertyId": "66964e2b-2550-4476-84c3-1a4c0c5c067f",
+        "startDate": "2026-03-11",
+        "endDate": null,
+        "limit": 50,
+        "offset": 0
+      },
+      "notes": "Paginate by incrementing offset by limit until events array is empty."
+    },
+
+    "GetCalendarView": {
+      "description": "Calendar view — per-day availability and lowest price for a month range.",
+      "operationName": "GetCalendarView",
+      "query": "query GetCalendarView($showId: String, $propertyId: String, $seasonId: String, $programId: String, $startDate: String!, $endDate: String!, $redemptionCode: String) {\n  showBooking {\n    calendarView(queryParams: {\n      showId: $showId, propertyId: $propertyId, seasonId: $seasonId,\n      programId: $programId, startDate: $startDate, endDate: $endDate,\n      redemptionCode: $redemptionCode\n    }) {\n      date\n      available\n      offerAvailable\n      lowestPrice\n    }\n  }\n}",
+      "variables": {
+        "showId": "ka-by-cirque-du-soleil",
+        "propertyId": "66964e2b-2550-4476-84c3-1a4c0c5c067f",
+        "startDate": "2026-03-01",
+        "endDate": "2026-03-31",
+        "seasonId": null,
+        "programId": null,
+        "redemptionCode": null
+      }
+    },
+
+    "GetShowEvent": {
+      "description": "Single event metadata by eventId.",
+      "operationName": "GetShowEvent",
+      "query": "query GetShowEvent($showEventId: String!) {\n  getShowEvent(id: $showEventId) {\n    id\n    eventDate\n    eventTime\n    seasonId\n  }\n}",
+      "variables": {
+        "showEventId": "Event_4801603"
+      }
+    },
+
+    "GetSeatsAvailability": {
+      "description": "INVENTORY — Full seat-level availability per event. Returns sections > rows > seat ranges with prices. This is the key scraping target.",
+      "operationName": "GetSeatsAvailability",
+      "query": "query GetSeatsAvailability($showEventId: String!, $programId: String, $numTicket: Int, $sections: String, $priceCodes: String, $redemptionCode: String, $numAdaTickets: Int, $numCompanionTickets: Int, $offerSeatsOnly: Boolean, $propertyId: String) {\n  showBooking {\n    seatsAvailability(queryParams: {\n      showEventId: $showEventId, programId: $programId,\n      numTickets: $numTicket, sections: $sections,\n      priceCodes: $priceCodes, redemptionCode: $redemptionCode,\n      numAdaTickets: $numAdaTickets, numCompanionTickets: $numCompanionTickets,\n      offerSeatsOnly: $offerSeatsOnly, propertyId: $propertyId\n    }) {\n      limitedAvailability\n      comp\n      hdePackage\n      seats {\n        count\n        startingPrice\n        name\n        seatRows {\n          name\n          seats {\n            firstSeat\n            lastSeat\n            numSeats\n            seatIncrement\n            priceCode\n            basePrice\n            discountedPrice\n            priceLevel\n            holdClass\n            ada\n            adaCompanion\n            vip\n          }\n        }\n      }\n      prices {\n        code\n        description\n        price {\n          basePrice\n          discountedPrice\n          comp\n          hdePackage\n          discounted\n          basePriceWithServiceFee\n          discountedPriceWithServiceFee\n          serviceFee\n        }\n        minTickets\n        maxTickets\n        totalAvailableSeats\n        ticketTypeCode\n        ticketTypeDescription\n        offerApplicable\n      }\n      seatRowsSortedByPrice {\n        name\n        sectionName\n        startingPrice\n        numSeats\n      }\n    }\n  }\n}",
+      "variables": {
+        "showEventId": "Event_4801603",
+        "propertyId": "66964e2b-2550-4476-84c3-1a4c0c5c067f",
+        "offerSeatsOnly": false,
+        "programId": null,
+        "numTicket": null,
+        "sections": null,
+        "priceCodes": null,
+        "redemptionCode": null,
+        "numAdaTickets": null,
+        "numCompanionTickets": null
+      },
+      "response_sample": {
+        "data": {
+          "showBooking": {
+            "seatsAvailability": {
+              "limitedAvailability": false,
+              "comp": false,
+              "hdePackage": false,
+              "seats": [
+                {
+                  "count": 94,
+                  "startingPrice": 107.7,
+                  "name": "101",
+                  "seatRows": [
+                    {
+                      "name": "P",
+                      "seats": [
+                        {
+                          "firstSeat": 1,
+                          "lastSeat": 4,
+                          "numSeats": 4,
+                          "seatIncrement": 1,
+                          "priceCode": "DN05",
+                          "basePrice": 107.7,
+                          "discountedPrice": 107.7,
+                          "priceLevel": 4,
+                          "holdClass": "DIST-OPEN",
+                          "ada": false,
+                          "adaCompanion": false,
+                          "vip": false
+                        }
+                      ]
+                    }
+                  ]
+                }
+              ],
+              "prices": [
+                {
+                  "code": "DN05",
+                  "description": "D Price Level - No Discount",
+                  "price": {
+                    "basePrice": 89.4,
+                    "discountedPrice": 89.4,
+                    "basePriceWithServiceFee": 107.7,
+                    "discountedPriceWithServiceFee": 107.7,
+                    "serviceFee": 18.3
+                  },
+                  "totalAvailableSeats": 12,
+                  "ticketTypeCode": "GEN",
+                  "ticketTypeDescription": "General Admission"
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+
+    "GetOffers": {
+      "description": "Available promotional programs (discounts, MyVegas comps) for a show.",
+      "operationName": "GetOffers",
+      "query": "query GetOffers($propertyId: String, $showId: String) {\n  showBooking {\n    offers(queryParams: { propertyId: $propertyId, showId: $showId }) {\n      programDetails {\n        id\n        active\n        bookStartDate\n        bookEndDate\n        bookableOnline\n        descriptions { short subtitle }\n        minTickets\n        maxTickets\n        ticketMultiple\n        name\n        propertyId\n        termsConditions\n        type\n        myvegas\n        events\n        startingPrice\n        isComp\n      }\n    }\n  }\n}",
+      "variables": {
+        "propertyId": "66964e2b-2550-4476-84c3-1a4c0c5c067f",
+        "showId": "ka-by-cirque-du-soleil"
+      }
+    }
+  },
+
+  "known_property_ids": {
+    "mgmgrand": "66964e2b-2550-4476-84c3-1a4c0c5c067f",
+    "parkmgm": "bee81f88-286d-43dd-91b5-3917d9d62a68"
+  },
+
+  "known_shows": [
+    { "show_id": "ka-by-cirque-du-soleil",      "property": "mgmgrand",    "type": "mgm_internal" },
+    { "show_id": "o-by-cirque-du-soleil",        "property": "bellagio",    "type": "mgm_internal" },
+    { "show_id": "michael-jackson-one",          "property": "mandalaybay", "type": "mgm_internal" },
+    { "show_id": "fantasy",                      "property": "luxor",       "type": "mgm_internal" },
+    { "show_id": "blue-man-group",               "property": "luxor",       "type": "mgm_internal" },
+    { "show_id": "mad-apple",                    "property": "newyorknewyork", "type": "mgm_internal" },
+    { "show_id": "david-copperfield",            "property": "mgmgrand",    "type": "mgm_internal" },
+    { "show_id": "jabbawockeez",                 "property": "mgmgrand",    "type": "mgm_internal" },
+    { "show_id": "brad-garretts-comedy-club",    "property": "mgmgrand",    "type": "mgm_internal" },
+    { "show_id": "tournament-of-kings",          "property": "excalibur",   "type": "mgm_internal" },
+    { "show_id": "thunder-from-down-under",      "property": "excalibur",   "type": "mgm_internal" },
+    { "show_id": "the-australian-bee-gees",      "property": "excalibur",   "type": "mgm_internal" },
+    { "show_id": "the-mac-king-comedy-magic-show","property": "excalibur",  "type": "mgm_internal" },
+    { "show_id": "ultimate-4d-experience",       "property": "excalibur",   "type": "mgm_internal" },
+    { "show_id": "carrot-top",                   "property": "luxor",       "type": "mgm_internal" },
+    { "show_id": "titanic-the-artifact-exhibition","property": "luxor",     "type": "mgm_internal" },
+    { "show_id": "bodies-the-exhibition",        "property": "luxor",       "type": "mgm_internal" },
+    { "show_id": "discovering-king-tuts-tomb",   "property": "luxor",       "type": "mgm_internal" },
+    { "show_id": "bellagio-gallery-of-fine-art", "property": "bellagio",    "type": "mgm_internal" },
+    { "show_id": "mgm-tape-face",                "property": "mgmgrand",    "type": "mgm_internal" },
+    { "show_id": "sammy-hagar",                  "property": "parkmgm",     "type": "external_redirect", "external_url": "https://www.ticketmaster.com/artist/1126196?venueId=376930" }
+  ]
+}
