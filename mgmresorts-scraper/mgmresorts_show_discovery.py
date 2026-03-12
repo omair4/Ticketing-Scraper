@@ -9,16 +9,22 @@ from customrequests import make_request
 from customrequests import sleep
 
 import pymysql
-import requests
 import json
+try:
+    from curl_cffi import requests as requests
+    _HTTP_EXTRA = {"impersonate": "chrome120"}
+except ImportError:
+    import requests  # type: ignore[no-redef]
+    _HTTP_EXTRA = {}
 import time
 from datetime import datetime, timezone
 
 
 database = "mgmresorts"
 
+from mgm_auth import get_anon_token
+
 GRAPHQL_URL = "https://api.mgmresorts.com/graphql-next"
-AUTH_URL = "https://identityapi.mgmresorts.com/identity/authorization/v2/anon/user/token"
 
 PROPERTY_SUBDOMAIN_MAP = {
     "mgmgrand":        "mgmgrand.mgmresorts.com",
@@ -39,18 +45,6 @@ PROPERTY_SUBDOMAIN_MAP = {
 }
 
 
-def get_anon_token(proxy=None):
-    """Fetch anonymous bearer token. No login required."""
-    resp = requests.get(AUTH_URL, proxies=proxy, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    # Token is in the response — adjust key if structure changes
-    token = data.get("token") or data.get("access_token") or data.get("id_token")
-    if not token:
-        raise ValueError(f"Could not find token in auth response: {list(data.keys())}")
-    return token
-
-
 def graphql(query, variables, token, proxy=None):
     headers = {
         "Content-Type": "application/json",
@@ -60,7 +54,7 @@ def graphql(query, variables, token, proxy=None):
         "Referer": "https://www.mgmresorts.com/",
     }
     payload = {"query": query, "variables": variables}
-    resp = requests.post(GRAPHQL_URL, json=payload, headers=headers, proxies=proxy, timeout=30)
+    resp = requests.post(GRAPHQL_URL, json=payload, headers=headers, proxies=proxy, timeout=30, **_HTTP_EXTRA)
     resp.raise_for_status()
     return resp.json()
 
@@ -106,10 +100,13 @@ def get_booking_url(show_id, property_id, token, proxy=None):
 def lambda_handler(event, context):
     ###################### PROXY
     proxy_host, proxy_port, proxy_username, proxy_password = get_proxy_info()
-    proxy = {
-        'http': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}',
-        'https': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
-    }
+    if proxy_host is None:
+        proxy = None
+    else:
+        proxy = {
+            'http': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}',
+            'https': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
+        }
     ###################### PROXY
 
     print(event)
@@ -134,52 +131,72 @@ def lambda_handler(event, context):
         try:
             detail = graphql(GET_SHOW, {"showId": show_id}, token, proxy=proxy)
             show = detail.get("data", {}).get("show", {})
-
-            if not show:
-                print(f"No show data for: {show_id}")
+        except requests.exceptions.HTTPError as e:
+            if e.response is not None and getattr(e.response, "status_code", None) == 401:
+                token = get_anon_token(proxy=proxy)
+                try:
+                    detail = graphql(GET_SHOW, {"showId": show_id}, token, proxy=proxy)
+                    show = detail.get("data", {}).get("show", {})
+                except Exception as retry_e:
+                    print(f"Error fetching show {show_id}: {retry_e}")
+                    continue
+            else:
+                print(f"Error fetching show {show_id}: {e}")
+                continue
+        except Exception as e:
+            if "401" in str(e):
+                token = get_anon_token(proxy=proxy)
+                try:
+                    detail = graphql(GET_SHOW, {"showId": show_id}, token, proxy=proxy)
+                    show = detail.get("data", {}).get("show", {})
+                except Exception as retry_e:
+                    print(f"Error fetching show {show_id}: {retry_e}")
+                    continue
+            else:
+                print(f"Error fetching show {show_id}: {e}")
                 continue
 
-            name = show.get("name", "")
-            product_category = show.get("productCategory", "")
-            prop = show.get("property", {}) or {}
-            prop_name = prop.get("name", "")
-            location = prop.get("location", {}) or {}
-            venue_address = location.get("address", "")
-
-            # Determine booking URL
-            # Look up the subdomain from property name (lowercase, no spaces)
-            prop_key = prop_name.lower().replace(" ", "").replace("lasvegas", "").replace("hotelcasino", "").replace("hotel", "").replace("casino", "").replace("resort", "").replace("&", "")
-            subdomain = None
-            for key, domain in PROPERTY_SUBDOMAIN_MAP.items():
-                if key in prop_key or prop_key in key:
-                    subdomain = domain
-                    break
-
-            if subdomain:
-                booking_url = f"https://{subdomain}/book-show/{show_id}"
-                scraper_type = "mgm_internal"
-            else:
-                booking_url = None
-                scraper_type = "unknown"
-
-            print(f"  {show_id} | {prop_name} | type={scraper_type}")
-
-            all_shows.append({
-                "show_id": show_id,
-                "property_id": property_id,
-                "show_name": name,
-                "venue_name": prop_name,
-                "venue_address": venue_address,
-                "booking_url": booking_url,
-                "scraper_type": scraper_type,
-                "product_category": product_category,
-            })
-
-            sleep(0.3)  # gentle rate limiting
-
-        except Exception as e:
-            print(f"Error fetching show {show_id}: {e}")
+        if not show:
+            print(f"No show data for: {show_id}")
             continue
+
+        name = show.get("name", "")
+        product_category = show.get("productCategory", "")
+        prop = show.get("property", {}) or {}
+        prop_name = prop.get("name", "")
+        location = prop.get("location", {}) or {}
+        venue_address = location.get("address", "")
+
+        # Determine booking URL
+        # Look up the subdomain from property name (lowercase, no spaces)
+        prop_key = prop_name.lower().replace(" ", "").replace("lasvegas", "").replace("hotelcasino", "").replace("hotel", "").replace("casino", "").replace("resort", "").replace("&", "")
+        subdomain = None
+        for key, domain in PROPERTY_SUBDOMAIN_MAP.items():
+            if key in prop_key or prop_key in key:
+                subdomain = domain
+                break
+
+        if subdomain:
+            booking_url = f"https://{subdomain}/book-show/{show_id}"
+            scraper_type = "mgm_internal"
+        else:
+            booking_url = None
+            scraper_type = "unknown"
+
+        print(f"  {show_id} | {prop_name} | type={scraper_type}")
+
+        all_shows.append({
+            "show_id": show_id,
+            "property_id": property_id,
+            "show_name": name,
+            "venue_name": prop_name,
+            "venue_address": venue_address,
+            "booking_url": booking_url,
+            "scraper_type": scraper_type,
+            "product_category": product_category,
+        })
+
+        sleep(0.3)  # gentle rate limiting
 
     print(f"Total shows processed: {len(all_shows)}")
 

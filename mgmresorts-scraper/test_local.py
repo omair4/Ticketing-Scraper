@@ -127,6 +127,9 @@ def gql(query, variables, operation_name, token):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Origin": "https://www.mgmresorts.com",
         "Referer": "https://www.mgmresorts.com/",
+        # Required by MGM's backend — discovered via browser interception
+        "x-mgm-source": "mgmri",
+        "x-mgm-channel": "web",
     }
     payload = {"query": query, "variables": variables, "operationName": operation_name}
     _extra = {"impersonate": _IMPERSONATE} if _IMPERSONATE else {}
@@ -276,7 +279,8 @@ def cmd_schedule(show_id, token):
             "showId": show_id, "propertyId": property_id,
             "startDate": today, "endDate": None, "limit": 20, "offset": offset
         }, "GetShowEventsView", token)
-        events = result.get("data", {}).get("showBooking", {}).get("eventsViewForShow", {}).get("events", [])
+        events_view = (result.get("data") or {}).get("showBooking") or {}
+        events = (events_view.get("eventsViewForShow") or {}).get("events") or []
         if not events:
             break
         all_events.extend(events)

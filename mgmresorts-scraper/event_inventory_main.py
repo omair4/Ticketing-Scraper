@@ -6,25 +6,21 @@ from creds import get_proxy_info
 from creds import json
 
 import pymysql
-import requests
 import pandas as pd
+try:
+    from curl_cffi import requests as requests
+    _HTTP_EXTRA = {"impersonate": "chrome120"}
+except ImportError:
+    import requests  # type: ignore[no-redef]
+    _HTTP_EXTRA = {}
 from datetime import datetime
 
 
 database = "mgmresorts"
 
+from mgm_auth import get_anon_token
+
 GRAPHQL_URL = "https://api.mgmresorts.com/graphql-next"
-AUTH_URL = "https://identityapi.mgmresorts.com/identity/authorization/v2/anon/user/token"
-
-
-def get_anon_token(proxy=None):
-    resp = requests.get(AUTH_URL, proxies=proxy, timeout=15)
-    resp.raise_for_status()
-    data = resp.json()
-    token = data.get("token") or data.get("access_token") or data.get("id_token")
-    if not token:
-        raise ValueError(f"No token in auth response: {list(data.keys())}")
-    return token
 
 
 def graphql(query, variables, operation_name, token, proxy=None):
@@ -36,7 +32,7 @@ def graphql(query, variables, operation_name, token, proxy=None):
         "Referer": "https://www.mgmresorts.com/",
     }
     payload = {"query": query, "variables": variables, "operationName": operation_name}
-    resp = requests.post(GRAPHQL_URL, json=payload, headers=headers, proxies=proxy, timeout=30)
+    resp = requests.post(GRAPHQL_URL, json=payload, headers=headers, proxies=proxy, timeout=30, **_HTTP_EXTRA)
     resp.raise_for_status()
     return resp.json()
 
@@ -216,10 +212,13 @@ def parse_seats(event_info, seats_data):
 def lambda_handler(event, context):
     ###################### PROXY
     proxy_host, proxy_port, proxy_username, proxy_password = get_proxy_info()
-    proxy = {
-        'http': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}',
-        'https': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
-    }
+    if proxy_host is None:
+        proxy = None
+    else:
+        proxy = {
+            'http': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}',
+            'https': f'http://{proxy_username}:{proxy_password}@{proxy_host}:{proxy_port}'
+        }
 
     print(event)
 
