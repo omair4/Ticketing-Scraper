@@ -1,21 +1,24 @@
 #!/usr/bin/env python3
 """
-Local test runner for Yapsody scraper.
-Bypasses Lambda infrastructure (creds, pymysql uploads).
-Prints results to stdout — no DB writes.
+Local test runner for Yapsody scraper — no DB required.
+Runs the same scraper logic as Lambda; skips all DB reads/writes.
+Use this to test Lambda behavior and inspect scraper results on your machine.
 
 Usage:
     python test_local.py discover
+    python test_local.py run-all              # Full flow: discover → scrape each event
     python test_local.py determine <venue_code> <event_id>
     python test_local.py inventory <workspace_key> <event_key> <chart_key> '<pricing_json>'
-    python test_local.py full <venue_code> <event_id>
+    python test_local.py full <venue_code> <event_id> [--save OUTPUT_DIR]
+
+  run-all             Discover events from concerts.yapsody.com, then full-scrape each
+                      yapsody_seatsio event (future dates only). One command for the whole flow.
+  --save OUTPUT_DIR   (full only) Write seats to OUTPUT_DIR as JSON + CSV
 
 Examples:
     python test_local.py discover
-    python test_local.py determine sycuancasino 852239
-    python test_local.py determine dakotamagiccasino 863499
-    python test_local.py full sycuancasino 852239
-    python test_local.py full dakotamagiccasino 863499
+    python test_local.py run-all
+    python test_local.py full sycuancasino 852239 --save ./my_results
 """
 
 import sys
@@ -27,10 +30,20 @@ import re
 from pprint import pprint
 
 # ---------------------------------------------------------------------------
-# Inject local_creds as 'creds' so Lambda imports work without /mnt/access
+# Inject local_creds as 'creds' so Lambda imports work without /mnt/access.
+# If local_creds.py is missing, use stub (no DB, no proxy) for scraping-only tests.
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.dirname(__file__))
-import local_creds as _local_creds
+try:
+    import local_creds as _local_creds
+except ImportError:
+    class _local_creds:
+        @staticmethod
+        def get_db_info():
+            return None, None, None
+        @staticmethod
+        def get_proxy_info():
+            return None, None, None, None
 sys.modules["creds"] = _local_creds
 
 import httpx
@@ -114,30 +127,40 @@ def cmd_determine(venue_code: str, event_id: str):
     print(f"=== Determine scraper: venue={venue_code} event={event_id} ===")
 
     from yapsody_determine_scraper import (
-        _extract_performance_id,
+        _get_performance_id_with_browser,
         _run_browser,
+        EventExpiredError,
     )
 
     booking_url = f"https://{venue_code}.yapsody.com/event/index/{event_id}/"
-    print(f"Fetching event page: {booking_url}")
+    print(f"Loading event page with browser: {booking_url}")
 
-    with httpx.Client(headers=HEADERS, timeout=30, proxy=PROXIES, follow_redirects=True) as client:
-        resp = client.get(booking_url)
-        resp.raise_for_status()
-        html = resp.text
-        final_url = str(resp.url)
+    performance_id = None
+    for attempt in range(2):
+        try:
+            performance_id = asyncio.run(
+                _get_performance_id_with_browser(
+                    booking_url, event_id, _ph, _pp, _pu, _ppw
+                )
+            )
+            if performance_id:
+                break
+            if attempt == 0:
+                print("No performance_id; retrying...")
+        except EventExpiredError as e:
+            print(f"SKIP: {e}")
+            return None
+        except Exception as e:
+            if attempt == 0:
+                print(f"Attempt 1 failed: {e}; retrying...")
+                continue
+            raise
 
-    print(f"Final URL: {final_url}")
-    print(f"HTML size: {len(html)} bytes")
-
-    performance_id = _extract_performance_id(html, event_id)
     print(f"performance_id: {performance_id}")
 
     if not performance_id:
-        print("ERROR: Could not find performance_id in HTML")
-        print("--- Snippet of HTML (first 2000 chars) ---")
-        print(html[:2000])
-        return
+        print("ERROR: Could not find performance_id")
+        return None
 
     event_key  = f"Performance-{performance_id}"
     ticket_url = f"https://{venue_code}.yapsody.com/event/book/{event_id}/{performance_id}"
@@ -145,16 +168,18 @@ def cmd_determine(venue_code: str, event_id: str):
     print(f"ticket_url: {ticket_url}")
 
     print("\nLaunching Playwright browser...")
-    workspace_key, chart_key, pricing_list = asyncio.run(
+    workspace_key, chart_key, pricing_list, chart_version = asyncio.run(
         _run_browser(venue_code, event_id, performance_id, _ph, _pp, _pu, _ppw)
     )
 
     print(f"\nworkspace_key: {workspace_key}")
     print(f"chart_key:     {chart_key}")
+    if chart_version:
+        print(f"chart_version: {chart_version}")
     print(f"pricing_list ({len(pricing_list)} categories):")
     pprint(pricing_list)
 
-    return {
+    result = {
         "event_id":       event_id,
         "performance_id": performance_id,
         "event_key":      event_key,
@@ -163,6 +188,9 @@ def cmd_determine(venue_code: str, event_id: str):
         "pricing_list":   pricing_list,
         "ticket_url":     ticket_url,
     }
+    if chart_version:
+        result["chart_version"] = chart_version
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -170,7 +198,7 @@ def cmd_determine(venue_code: str, event_id: str):
 # ---------------------------------------------------------------------------
 
 def cmd_inventory(workspace_key: str, event_key: str, chart_key: str,
-                  pricing_json: str, event_id: str = "TEST"):
+                  pricing_json: str, event_id: str = "TEST", chart_version: str = None):
     print(f"=== Inventory: workspace={workspace_key} event_key={event_key} ===")
 
     seatsio = _load_dotted("seatsio", "event_inventory.seatsio.py")
@@ -188,6 +216,8 @@ def cmd_inventory(workspace_key: str, event_key: str, chart_key: str,
         "event_datetime": "2025-01-01 00:00:00",
         "time_frame":     0,
     }
+    if chart_version:
+        scraper_event["chart_version"] = chart_version
 
     df, logs = seatsio.scrape(scraper_event, proxy=REQUESTS_PROXIES)
 
@@ -214,13 +244,13 @@ def cmd_inventory(workspace_key: str, event_key: str, chart_key: str,
 # full (determine + inventory)
 # ---------------------------------------------------------------------------
 
-def cmd_full(venue_code: str, event_id: str):
+def cmd_full(venue_code: str, event_id: str, save_dir: str = None):
     print(f"=== Full: venue={venue_code} event={event_id} ===\n")
 
     result = cmd_determine(venue_code, event_id)
     if not result:
-        print("determine step failed — aborting")
-        return
+        print("determine step failed or skipped — aborting")
+        return None, None
 
     print("\n" + "=" * 60)
     print("Running inventory step...")
@@ -232,13 +262,30 @@ def cmd_full(venue_code: str, event_id: str):
         chart_key=result["chart_key"],
         pricing_json=json.dumps(result["pricing_list"]),
         event_id=result["event_id"],
+        chart_version=result.get("chart_version"),
     )
+
+    if save_dir and df is not None and not df.empty:
+        os.makedirs(save_dir, exist_ok=True)
+        safe_id = re.sub(r"[^\w\-]", "_", event_id)
+        prefix = f"yapsody_{venue_code}_{safe_id}"
+        json_path = os.path.join(save_dir, f"{prefix}.json")
+        csv_path = os.path.join(save_dir, f"{prefix}.csv")
+        df.to_json(json_path, orient="records", indent=2, date_format="iso")
+        df.to_csv(csv_path, index=False)
+        print(f"\nSaved: {json_path}\n       {csv_path}")
     return df, logs
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
+def cmd_run_all():
+    """Full flow: discover → scrape each yapsody_seatsio event (no DB)."""
+    import run_all_events
+    run_all_events.main()
+
 
 if __name__ == "__main__":
     args = sys.argv[1:]
@@ -250,6 +297,9 @@ if __name__ == "__main__":
 
     if cmd == "discover":
         cmd_discover()
+
+    elif cmd == "run-all":
+        cmd_run_all()
 
     elif cmd == "determine":
         if len(args) < 3:
@@ -267,9 +317,15 @@ if __name__ == "__main__":
 
     elif cmd == "full":
         if len(args) < 3:
-            print("Usage: python test_local.py full <venue_code> <event_id>")
+            print("Usage: python test_local.py full <venue_code> <event_id> [--save OUTPUT_DIR]")
             sys.exit(1)
-        cmd_full(args[1], args[2])
+        venue, eid = args[1], args[2]
+        save_dir = None
+        if "--save" in args:
+            i = args.index("--save")
+            if i + 1 < len(args):
+                save_dir = args[i + 1]
+        cmd_full(venue, eid, save_dir=save_dir)
 
     else:
         print(f"Unknown command: {cmd}")

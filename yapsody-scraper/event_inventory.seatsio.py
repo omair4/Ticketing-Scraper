@@ -41,7 +41,8 @@ SEATSIO_HEADERS = {
 }
 
 EXCLUDE_TICKET_TYPES = ["vip", "greet", "package", "me +3", "4-pack"]
-EXCLUDE_LABELS = ["table", "suite", "fast pass"]
+# "table" omitted: table-based charts use section label "Table" (e.g. Table-91-1)
+EXCLUDE_LABELS = ["suite", "fast pass"]
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +155,8 @@ def scrape(event: dict, proxy: Optional[dict] = None) -> Tuple[pd.DataFrame, dic
             if k is not None:
                 category_lookup[k] = cat.get("label", "")
 
-        object_categories = rendering_data.get("objectCategories", {})
-        # object_categories: {"Floor 101-A-1": category_key, ...}
+        object_categories = rendering_data.get("objectCategories") or {}
+        # object_categories: {"Section A-1-2": category_key, ...}
 
         # -----------------------------------------------------------------------
         # 5. Build excluded_objects from forSaleConfigsPerEvent
@@ -182,15 +183,22 @@ def scrape(event: dict, proxy: Optional[dict] = None) -> Tuple[pd.DataFrame, dic
         # -----------------------------------------------------------------------
         # 6. Fetch charts/published for seat layout + GA capacities
         # -----------------------------------------------------------------------
+        chart_ver = event.get("chart_version") or PUBLISHED_VERSION
         charts_url = (
             f"{SEATSIO_CDN}/system/public/{workspace_key}"
-            f"/charts/{chart_key}/published/{PUBLISHED_VERSION}"
+            f"/charts/{chart_key}/published/{chart_ver}"
         )
         print(f"Fetching charts/published: {charts_url}")
         resp = requests.get(charts_url, headers=SEATSIO_HEADERS, proxies=proxy, timeout=30)
         resp.raise_for_status()
         chart_raw = _decode_response(resp.content)
         chart_data = json.loads(chart_raw) if chart_raw else {}
+
+        # Yapsody: rendering-info often has no objectCategories; build from chart
+        if not object_categories and chart_data:
+            object_categories = _build_object_categories_from_chart(chart_data)
+            if object_categories:
+                print(f"Built objectCategories from chart: {len(object_categories)} objects")
 
         # -----------------------------------------------------------------------
         # 7. Build seat rows from objectCategories
@@ -231,7 +239,7 @@ def scrape(event: dict, proxy: Optional[dict] = None) -> Tuple[pd.DataFrame, dic
 
         df = pd.DataFrame(rows)
         if df.empty:
-            print("No seats found in objectCategories")
+            print("No seats found in objectCategories (rendering-info has no objects or all excluded)")
             return pd.DataFrame(), logs
 
         # -----------------------------------------------------------------------
@@ -375,14 +383,21 @@ def scrape(event: dict, proxy: Optional[dict] = None) -> Tuple[pd.DataFrame, dic
         all_seats = _determine_seat_pattern(all_seats)
 
         # -----------------------------------------------------------------------
-        # 15. Final filters: remove ADA, unavailable, zero-price, null seat_number
+        # 15. Status column (sold vs available) — match prekindle_scraper: all seats with status
         # -----------------------------------------------------------------------
+        all_seats["status"] = all_seats["available"].map(lambda x: "available" if x else "sold")
+
+        # -----------------------------------------------------------------------
+        # 16. Final filters: remove ADA, zero-price, null seat_number (keep both sold and available)
+        # -----------------------------------------------------------------------
+        all_seats = all_seats[all_seats["ada"] == False]
         all_seats = all_seats[
-            (all_seats["available"] == True) &
-            (all_seats["ada"] == False)
+            all_seats["price"].notna() & ((all_seats["price"] > 0) | (all_seats["price"] == -1))
         ]
-        all_seats = all_seats[all_seats["price"].notna() & (all_seats["price"] > 0)]
         all_seats = all_seats[all_seats["seat_number"].notna()]
+
+        if all_seats.empty:
+            print("[seatsio] All seats filtered out (ADA/price/seat_number)")
 
         # Clean up columns
         drop_cols = [
@@ -511,6 +526,55 @@ def _extract_ga_capacity_map(chart_data: dict) -> dict:
                 ga_map[area["label"]] = area["capacity"]
 
     return ga_map
+
+
+def _build_object_categories_from_chart(chart_data: dict) -> dict:
+    """
+    Build objectCategories { objectLabel: categoryKey } from chart when
+    rendering-info does not include objectCategories (e.g. Yapsody).
+    Label format must match object-statuses: "Section E-L-113" (section-row-seat)
+    or "Table-1-1" for table-based charts (section-table-seat).
+    Supports: sections[].subChart.rows[].seats[] and sections[].subChart.tables[].seats[].
+    """
+    out = {}
+    sub = chart_data.get("subChart") or {}
+    for sec in sub.get("sections") or []:
+        sec_label = sec.get("label") or ""
+        sec_cat = sec.get("categoryKey")
+        sec_sub = sec.get("subChart") or {}
+        # Path 1: rows + seats (standard reserved seating)
+        for row in sec_sub.get("rows") or []:
+            row_label = str(row.get("label") or "")
+            for seat in row.get("seats") or []:
+                seat_label = str(seat.get("label") or "")
+                cat = seat.get("categoryKey") if seat.get("categoryKey") is not None else sec_cat
+                if sec_label and seat_label and cat is not None:
+                    obj_label = f"{sec_label}-{row_label}-{seat_label}"
+                    out[obj_label] = cat
+        # Path 2: tables + seats (e.g. event 862207 Bingo Loco)
+        for tbl in sec_sub.get("tables") or []:
+            tbl_label = str(tbl.get("label") or "")
+            for seat in tbl.get("seats") or []:
+                seat_label = str(seat.get("label") or "")
+                cat = seat.get("categoryKey") if seat.get("categoryKey") is not None else sec_cat
+                if sec_label and seat_label and cat is not None:
+                    obj_label = f"{sec_label}-{tbl_label}-{seat_label}"
+                    out[obj_label] = cat
+        # Path 3: booths (each booth can have seats or be a single object)
+        for booth in sec_sub.get("booths") or []:
+            booth_label = str(booth.get("label") or "")
+            booth_seats = booth.get("seats") or []
+            if booth_seats:
+                for seat in booth_seats:
+                    seat_label = str(seat.get("label") or "")
+                    cat = seat.get("categoryKey") if seat.get("categoryKey") is not None else sec_cat
+                    if sec_label and seat_label and cat is not None:
+                        obj_label = f"{sec_label}-{booth_label}-{seat_label}"
+                        out[obj_label] = cat
+            elif sec_label and booth_label and (sec_cat is not None or booth.get("categoryKey") is not None):
+                cat = booth.get("categoryKey") if booth.get("categoryKey") is not None else sec_cat
+                out[f"{sec_label}-{booth_label}-1"] = cat
+    return out
 
 
 # ---------------------------------------------------------------------------

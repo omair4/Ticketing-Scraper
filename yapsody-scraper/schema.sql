@@ -30,6 +30,7 @@ CREATE TABLE event_inventory (
     `row`               VARCHAR(50),
     seat_number         DECIMAL(10,2),
     total_price         DECIMAL(10,2),
+    status              VARCHAR(20),       -- available | sold (like prekindle_scraper)
     seat_pattern        VARCHAR(50),       -- Consecutive | Even | Odd
     isRestrictedView    TINYINT(1) DEFAULT 0,
     category            VARCHAR(100),

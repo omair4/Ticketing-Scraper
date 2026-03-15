@@ -46,6 +46,10 @@ HEADERS = {
 }
 
 
+class EventExpiredError(Exception):
+    """Raised when the event index page redirects away (event removed/expired)."""
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -85,6 +89,115 @@ def _extract_performance_id(html: str, event_id: str) -> str | None:
     return None
 
 
+# Selectors that work for both Angular (a.js-get-ticket-btn) and Next.js (button with text).
+GET_TICKETS_SELECTORS = [
+    "a.js-get-ticket-btn",           # Angular
+    ".js-get-ticket-btn",
+    'button:has-text("Get Tickets")',  # Next.js
+    'a:has-text("Get Tickets")',
+    'button:has-text("Buy Tickets")',
+    'a:has-text("Buy Tickets")',
+    'a.btn:has-text("Get Tickets")',
+]
+
+
+async def _get_performance_id_with_browser(
+    booking_url: str, event_id: str,
+    proxy_host, proxy_port, proxy_username, proxy_password,
+) -> str | None:
+    """
+    Load event index with Playwright (client-rendered), click Get Tickets,
+    extract performance_id from URL or from intercepted /performances API response.
+    Handles both AngularJS and Next.js venues.
+    """
+    captured_performances: list = []  # list of performance dicts from API
+
+    async with async_browser(proxy_host, proxy_port, proxy_username, proxy_password) as browser:
+        context = await browser.new_context(
+            user_agent=HEADERS["user-agent"],
+            extra_http_headers={"accept-language": "en-US,en;q=0.9"},
+        )
+        page = await context.new_page()
+
+        async def on_response_async(response):
+            url = response.url
+            if "api.yapsody.com" in url and "/performances" in url and "pricing_info" not in url and "/performances/" not in url:
+                try:
+                    body = await response.body()
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                    inner = data.get("data", data)
+                    if isinstance(inner, dict) and "performances" in inner:
+                        perfs = inner["performances"]
+                        if isinstance(perfs, list) and perfs:
+                            captured_performances.extend(perfs)
+                            print(f"Captured {len(perfs)} performances from API")
+                except Exception:
+                    pass
+
+        page.on("response", on_response_async)
+
+        await page.goto(booking_url, wait_until="domcontentloaded", timeout=60000)
+        await page.wait_for_timeout(3000)
+
+        # Redirect check: event expired/removed
+        final_url = page.url
+        if f"/event/index/{event_id}" not in final_url and f"/event/book/{event_id}/" not in final_url:
+            raise EventExpiredError(f"Event page redirected to {final_url} (event {event_id} may be expired)")
+
+        # Optional: scroll to perf list (Angular only; no-op on Next.js)
+        try:
+            await page.locator("#perf-list").first.scroll_into_view_if_needed(timeout=5000)
+            await page.wait_for_timeout(1500)
+        except Exception:
+            pass
+
+        # Wait for any "Get Tickets" element to appear (framework bootstrap)
+        btn_found = False
+        for sel in GET_TICKETS_SELECTORS:
+            try:
+                loc = page.locator(sel).first
+                await loc.wait_for(state="visible", timeout=4000)
+                btn_found = True
+                break
+            except Exception:
+                continue
+        if not btn_found:
+            await page.wait_for_timeout(5000)
+        else:
+            await page.wait_for_timeout(1000)
+
+        # Click first matching Get Tickets button
+        for sel in GET_TICKETS_SELECTORS:
+            try:
+                btn = page.locator(sel).first
+                await btn.click()
+                await page.wait_for_timeout(5000)
+                try:
+                    await page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+                url = page.url
+                m = re.search(r"/event/book/" + re.escape(event_id) + r"/(\d+)", url)
+                if m:
+                    return m.group(1)
+                html = await page.content()
+                pid = _extract_performance_id(html, event_id)
+                if pid:
+                    return pid
+            except Exception:
+                continue
+
+        # Fallback: use first performance from intercepted API response
+        if captured_performances:
+            first_perf = captured_performances[0]
+            pid = first_perf.get("id") or first_perf.get("performance_id")
+            if pid is not None:
+                return str(pid)
+
+        html = await page.content()
+    return _extract_performance_id(html, event_id)
+
+
 def _parse_workspace_key(url: str) -> str | None:
     """Extract workspace key from seatsio CDN URL.
 
@@ -104,37 +217,62 @@ def _parse_chart_key(url: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _parse_chart_version(url: str) -> str | None:
+    """Extract published version from seatsio URL (e.g. .../published/6 -> '6')."""
+    match = re.search(r"/published/(\d+)(?:/|$)", url)
+    return match.group(1) if match else None
+
+
 def _extract_pricing_from_dom(page_content: str) -> list | None:
     """
     Fallback for Next.js venues where pricing_info is server-side rendered.
     Looks for seats_io_categories in inline JSON or script tags.
+    Handles both plain JSON and escaped JSON (RSC payloads use \\" for quotes).
     """
-    # Look for seats_io_categories in page source
-    match = re.search(
-        r'"seats_io_categories"\s*:\s*(\[[\s\S]*?\])',
-        page_content,
-    )
-    if match:
-        try:
-            raw = match.group(1)
-            # Clean up common JS artifacts
-            raw = re.sub(r",\s*([}\]])", r"\1", raw)
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            pass
+    def _try_parse_array(text: str, start: int) -> list | None:
+        """From position `start` (pointing at '['), extract the balanced JSON array."""
+        depth = 0
+        for i in range(start, min(start + 20000, len(text))):
+            if text[i] == "[":
+                depth += 1
+            elif text[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    raw = text[start:i + 1]
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError:
+                        pass
+                    # Try unescaping (RSC payloads)
+                    try:
+                        unescaped = raw.replace('\\"', '"').replace("\\\\", "\\")
+                        return json.loads(unescaped)
+                    except json.JSONDecodeError:
+                        pass
+                    return None
+        return None
 
-    # Look for full price block
-    match = re.search(
-        r'"price"\s*:\s*\{[^}]*"seats_io_categories"\s*:\s*(\[[\s\S]*?\])',
-        page_content,
-    )
-    if match:
-        try:
-            raw = match.group(1)
-            raw = re.sub(r",\s*([}\]])", r"\1", raw)
-            return json.loads(raw)
-        except json.JSONDecodeError:
-            pass
+    # Pattern 1: unescaped JSON — "seats_io_categories": [...]
+    for pattern in [r'"seats_io_categories"\s*:\s*\[',
+                    r'"seatsIoCategories"\s*:\s*\[']:
+        match = re.search(pattern, page_content)
+        if match:
+            arr_start = page_content.index("[", match.start())
+            result = _try_parse_array(page_content, arr_start)
+            if result:
+                return result
+
+    # Pattern 2: escaped JSON in RSC/Next.js payloads — \"seats_io_categories\":[...]
+    for pattern in [r'\\"seats_io_categories\\":\[',
+                    r'\\"seatsIoCategories\\":\[',
+                    r'\\"seats_io_categories\\"\s*:\s*\[',
+                    r'\\"seatsIoCategories\\"\s*:\s*\[']:
+        match = re.search(pattern, page_content)
+        if match:
+            arr_start = page_content.index("[", match.start())
+            result = _try_parse_array(page_content, arr_start)
+            if result:
+                return result
 
     return None
 
@@ -171,12 +309,17 @@ async def _run_browser(venue_code: str, event_id: str, performance_id: str,
             url = response.url
             status = response.status
 
-            # Capture pricing_info XHR (AngularJS venues send this as XHR)
-            if "/pricing_info" in url and status == 200:
+            # Capture full pricing_info XHR only (exclude .../pricing_info/access_code_enabled)
+            if "pricing_info" in url and "access_code_enabled" not in url and status == 200:
                 try:
-                    data = await response.json()
-                    captured_pricing["data"] = data
-                    print(f"Captured pricing_info from: {url}")
+                    body = await response.body()
+                    data = json.loads(body.decode("utf-8", errors="replace"))
+                    # API may return { price: {...} } or { data: { price: {...} }, status_code: 200 }
+                    price_obj = data.get("price") or (data.get("data") or {}).get("price") or {}
+                    has_cats = bool(price_obj.get("seats_io_categories") or price_obj.get("seatsIoCategories"))
+                    if has_cats or "data" not in captured_pricing:
+                        captured_pricing["data"] = data
+                        print(f"Captured pricing_info from: {url}" + (" (with categories)" if has_cats else ""))
                 except Exception as e:
                     print(f"Failed to parse pricing_info JSON: {e}")
 
@@ -187,29 +330,77 @@ async def _run_browser(venue_code: str, event_id: str, performance_id: str,
 
         page.on("response", on_response)
 
-        await page.goto(book_url, wait_until="networkidle", timeout=30000)
+        await page.goto(book_url, wait_until="domcontentloaded", timeout=45000)
+        await page.wait_for_timeout(3000)
 
-        # Extra wait for dynamic content and lazy XHR calls
-        await page.wait_for_timeout(5000)
+        # Next.js venues: click "Choose Your Seats" to load seats.io iframe
+        choose_seats_selectors = [
+            'button:has-text("Choose Your Seats")',
+            'a:has-text("Choose Your Seats")',
+            '[data-testid]:has-text("Choose Your Seats")',
+            'button:has-text("Select Best Seats")',
+            'a:has-text("Select Best Seats")',
+        ]
+        for sel in choose_seats_selectors:
+            try:
+                btn = page.locator(sel).first
+                await btn.wait_for(state="visible", timeout=3000)
+                await btn.click()
+                await page.wait_for_timeout(5000)
+                print("Clicked Choose Your Seats — waiting for seats.io to load")
+                break
+            except Exception:
+                continue
+
+        # Wait for main page to request pricing_info (may fire before or after iframe)
+        try:
+            await page.wait_for_response(
+                lambda r: "pricing_info" in r.url,
+                timeout=15000,
+            )
+        except Exception:
+            pass
+        await page.wait_for_timeout(2000)
+
+        # Poll until we have workspace_key, chart_key, and pricing (iframe may load after)
+        def _has_pricing():
+            raw = captured_pricing.get("data") or {}
+            price_obj = raw.get("price") or (raw.get("data") or {}).get("price") or {}
+            return bool(price_obj.get("seats_io_categories") or price_obj.get("seatsIoCategories"))
+        for _ in range(20):
+            await page.wait_for_timeout(2000)
+            has_wk = any(_parse_workspace_key(u) for u in captured_seatsio_urls)
+            has_ck = any("/charts/" in u and "/published/" in u for u in captured_seatsio_urls)
+            has_pr = _has_pricing()
+            if has_wk and has_ck and has_pr:
+                break
+        await page.wait_for_timeout(2000)
 
         page_content = await page.content()
+        await page.wait_for_timeout(1500)
 
     # ---------------------------------------------------------------------------
-    # Extract workspace_key and chart_key from captured CDN URLs
+    # Extract workspace_key, chart_key, chart_version from captured CDN URLs
     # ---------------------------------------------------------------------------
     workspace_key = None
     chart_key = None
+    chart_version = None
 
     for url in captured_seatsio_urls:
         if not workspace_key:
             workspace_key = _parse_workspace_key(url)
-        if not chart_key and "/charts/" in url and "/published/" in url:
-            chart_key = _parse_chart_key(url)
+        if "/charts/" in url and "/published/" in url:
+            if not chart_key:
+                chart_key = _parse_chart_key(url)
+            if not chart_version:
+                chart_version = _parse_chart_version(url)
         if workspace_key and chart_key:
             break
 
     print(f"workspace_key: {workspace_key}")
     print(f"chart_key: {chart_key}")
+    if chart_version:
+        print(f"chart_version: {chart_version}")
 
     # ---------------------------------------------------------------------------
     # Extract pricing_list
@@ -218,20 +409,70 @@ async def _run_browser(venue_code: str, event_id: str, performance_id: str,
 
     if "data" in captured_pricing:
         raw = captured_pricing["data"]
-        # Structure: { performance_info: {...}, price: { seats_io_categories: [...], ... } }
-        pricing_list = raw.get("price", {}).get("seats_io_categories")
+        # API may return { price: {...} } or { data: { price: {...} }, status_code: 200 }
+        price_obj = raw.get("price") or (raw.get("data") or {}).get("price") or {}
+        pricing_list = price_obj.get("seats_io_categories") or price_obj.get("seatsIoCategories")
         if pricing_list:
             print(f"pricing_list from XHR: {len(pricing_list)} categories")
+        else:
+            print(f"XHR pricing keys: {list(raw.keys())} | price keys: {list(price_obj.keys())}")
 
     if not pricing_list:
-        # Fallback: Next.js or SSR venues — try DOM extraction
+        # Fallback: DOM extraction
         print("pricing_info not in XHR — trying DOM fallback")
         pricing_list = _extract_pricing_from_dom(page_content)
         if pricing_list:
             print(f"pricing_list from DOM: {len(pricing_list)} categories")
 
     if not pricing_list:
-        raise ValueError("Could not capture pricing_list from XHR or DOM")
+        # Fallback: direct API fetch (full pricing_info endpoint), with retry
+        pricing_url = f"https://api.yapsody.com/online/events/{event_id}/performances/{performance_id}/pricing_info"
+        req_headers = dict(HEADERS)
+        req_headers["Referer"] = book_url
+        req_headers["Origin"] = f"https://{venue_code}.yapsody.com"
+        for _ in range(2):
+            try:
+                with httpx.Client(headers=req_headers, timeout=20) as client:
+                    resp = client.get(pricing_url)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        pricing_list = data.get("price", {}).get("seats_io_categories")
+                        if pricing_list:
+                            print(f"pricing_list from direct API: {len(pricing_list)} categories")
+                            break
+            except Exception as e:
+                print(f"Direct pricing_info fetch failed: {e}")
+            if pricing_list:
+                break
+
+    if not pricing_list and workspace_key and chart_key:
+        # Last resort: build minimal pricing_list from seatsio rendering-info
+        event_key_val = f"Performance-{performance_id}"
+        try:
+            ri_url = f"https://cdn-na.seatsio.net/system/public/{workspace_key}/rendering-info?event_key={event_key_val}"
+            with httpx.Client(headers=HEADERS, timeout=15) as client:
+                resp = client.get(ri_url)
+                if resp.status_code == 200:
+                    ri = resp.json()
+                    cats = ri.get("categories") or []
+                    unique_keys = []
+                    seen = set()
+                    for c in cats:
+                        k = c.get("key") if isinstance(c, dict) else c
+                        if k is not None:
+                            ki = int(k) if not isinstance(k, int) else k
+                            if ki not in seen:
+                                seen.add(ki)
+                                unique_keys.append(ki)
+                    if unique_keys:
+                        # Use -1 as sentinel for "price unknown" so inventory keeps seats (filter excludes only price==0)
+                        pricing_list = [{"category": k, "ticketTypes": [{"label": "General", "price": -1}]} for k in sorted(unique_keys)]
+                        print(f"pricing_list from rendering-info: {len(pricing_list)} categories (minimal, price unknown)")
+        except Exception as e:
+            print(f"Rendering-info fallback failed: {e}")
+
+    if not pricing_list:
+        raise ValueError("Could not capture pricing_list from XHR, DOM, or API")
 
     if not workspace_key:
         raise ValueError("Could not extract workspace_key from seatsio CDN URLs")
@@ -239,7 +480,7 @@ async def _run_browser(venue_code: str, event_id: str, performance_id: str,
     if not chart_key:
         raise ValueError("Could not extract chart_key from seatsio CDN URLs")
 
-    return workspace_key, chart_key, pricing_list
+    return workspace_key, chart_key, pricing_list, chart_version
 
 
 def lambda_handler(event, context):
@@ -256,17 +497,31 @@ def lambda_handler(event, context):
         proxies = proxy_url
 
     # ------------------------------------------------------------------
-    # Step 1: Fetch event index page to find performance_id
+    # Step 1: Get performance_id via Playwright (HTML is always client-rendered)
     # ------------------------------------------------------------------
-    print(f"Fetching event page: {booking_url}")
-    with httpx.Client(headers=HEADERS, timeout=30, proxy=proxies) as client:
-        resp = client.get(booking_url)
-        resp.raise_for_status()
-        html = resp.text
-
-    performance_id = _extract_performance_id(html, event_id)
+    print(f"Loading event page with browser: {booking_url}")
+    performance_id = None
+    for attempt in range(2):
+        try:
+            performance_id = asyncio.run(
+                _get_performance_id_with_browser(
+                    booking_url, event_id,
+                    proxy_host, proxy_port, proxy_username, proxy_password,
+                )
+            )
+            if performance_id:
+                break
+            if attempt == 0:
+                print("No performance_id; retrying...")
+        except EventExpiredError:
+            raise
+        except Exception as e:
+            if attempt == 0:
+                print(f"Attempt 1 failed: {e}; retrying...")
+                continue
+            raise
     if not performance_id:
-        raise ValueError(f"Could not find performance_id in event page HTML for event {event_id}")
+        raise ValueError(f"Could not find performance_id for event {event_id}")
 
     print(f"performance_id: {performance_id}")
     event_key = f"Performance-{performance_id}"
@@ -275,7 +530,7 @@ def lambda_handler(event, context):
     # ------------------------------------------------------------------
     # Step 2: Browser navigation + XHR interception
     # ------------------------------------------------------------------
-    workspace_key, chart_key, pricing_list = asyncio.run(
+    workspace_key, chart_key, pricing_list, chart_version = asyncio.run(
         _run_browser(venue_code, event_id, performance_id,
                      proxy_host, proxy_port, proxy_username, proxy_password)
     )
@@ -323,7 +578,7 @@ def lambda_handler(event, context):
     finally:
         conn.close()
 
-    return {
+    payload = {
         "statusCode": 200,
         "event_id":       event_id,
         "scraper_type":   "yapsody_seatsio",
@@ -334,3 +589,6 @@ def lambda_handler(event, context):
         "chart_key":      chart_key,
         "pricing_list":   pricing_list,
     }
+    if chart_version:
+        payload["chart_version"] = chart_version
+    return payload

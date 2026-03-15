@@ -307,12 +307,12 @@ def _upload_to_mysql(df: pd.DataFrame, logs: dict, scraper_type: str,
         INSERT INTO event_inventory (
             event_id, event_name, venue_name, event_datetime,
             objectLabelOrUuid, section_name, `row`, seat_number,
-            total_price, seat_pattern, isRestrictedView,
+            total_price, status, seat_pattern, isRestrictedView,
             category, ticket_type, time_frame
         ) VALUES (
             %(event_id)s, %(event_name)s, %(venue_name)s, %(event_datetime)s,
             %(objectLabelOrUuid)s, %(section_name)s, %(row)s, %(seat_number)s,
-            %(total_price)s, %(seat_pattern)s, %(isRestrictedView)s,
+            %(total_price)s, %(status)s, %(seat_pattern)s, %(isRestrictedView)s,
             %(category)s, %(ticket_type)s, %(time_frame)s
         )
     """
@@ -320,7 +320,7 @@ def _upload_to_mysql(df: pd.DataFrame, logs: dict, scraper_type: str,
     required_cols = [
         "event_id", "event_name", "venue_name", "event_datetime",
         "objectLabelOrUuid", "section_name", "row", "seat_number",
-        "total_price", "seat_pattern", "isRestrictedView",
+        "total_price", "status", "seat_pattern", "isRestrictedView",
         "category", "ticket_type", "time_frame",
     ]
 
