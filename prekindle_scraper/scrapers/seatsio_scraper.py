@@ -762,8 +762,10 @@ class SeatsIOScraper(BaseScraper):
                 current_stock = None
                 is_sold_out = False
 
-                # Check if this is a GA category by looking for GA area with this category
-                matching_ga_area = None
+                # Check if this is a GA category by collecting ALL matching GA areas
+                # (a single category can span multiple sub-areas, e.g. Lower Lawn has
+                # "Left Lower Lawn General Admission" + "Right Lower Lawn General Admission")
+                matching_ga_areas = []
                 for ga in ga_areas:
                     ga_label = ga.get('label', '')
 
@@ -775,50 +777,63 @@ class SeatsIOScraper(BaseScraper):
                     # Look up GA area's category via objectCategories
                     if ga_label in object_categories:
                         ga_cat_key = object_categories[ga_label]
+                        # Normalize to int — rendering-info returns mixed int/string types
+                        try:
+                            ga_cat_key = int(ga_cat_key)
+                        except (ValueError, TypeError):
+                            pass
                         if ga_cat_key == category_key:
-                            matching_ga_area = ga
-                            break
+                            matching_ga_areas.append(ga)
 
-                if matching_ga_area:
-                    # GA category - check availability API for actual available quantity
-                    ga_uuid = matching_ga_area.get('uuid', '')
-                    ga_label = matching_ga_area.get('label', '')
-                    
-                    # Try to find GA status in availability by uuid or label
-                    ga_status_str = availability.get(ga_uuid) or availability.get(ga_label, 'free')
-                    is_sold_out = ga_status_str in ('booked', 'sold', 'taken')
-                    
-                    # FIX: For GA areas, extract 'quantity' from object-statuses if available
-                    # This is the actual available count, not the total capacity
-                    current_stock = matching_ga_area.get('capacity')  # Default to capacity
-                    
-                    # Check if we have a quantity from object-statuses
-                    if responses:
-                        for response in responses:
-                            if 'object-statuses' in response.url and response.body:
-                                try:
-                                    decoded = decode_seatsio_response(response.body)
-                                    if decoded:
-                                        parsed = json.loads(decoded)
-                                        seat_list = parsed if isinstance(parsed, list) else []
-                                        
-                                        # Find this GA area by uuid or label
-                                        for item in seat_list:
-                                            if not isinstance(item, dict):
-                                                continue
-                                            item_label = item.get('objectLabelOrUuid', '')
-                                            if item_label == ga_uuid or item_label == ga_label:
-                                                # Found the GA area - use quantity field
-                                                quantity = item.get('quantity')
-                                                if quantity is not None:
-                                                    current_stock = int(quantity)
-                                                logger.info("using_ga_quantity_from_api", 
-                                                          ga_label=ga_label, 
-                                                          quantity=quantity,
-                                                          capacity=matching_ga_area.get('capacity'))
-                                                break
-                                except Exception as e:
-                                    logger.debug("failed_to_extract_ga_quantity", error=str(e))
+                if matching_ga_areas:
+                    # GA category - sum available quantity across all matching sub-areas
+                    total_quantity = None  # None means fall back to summed capacity
+                    all_sold_out = True
+
+                    for matching_ga_area in matching_ga_areas:
+                        ga_uuid = matching_ga_area.get('uuid', '')
+                        ga_label = matching_ga_area.get('label', '')
+
+                        ga_status_str = availability.get(ga_uuid) or availability.get(ga_label, 'free')
+                        if ga_status_str not in ('booked', 'sold', 'taken'):
+                            all_sold_out = False
+
+                        # Extract quantity from object-statuses for this sub-area
+                        if responses:
+                            for response in responses:
+                                if 'object-statuses' in response.url and response.body:
+                                    try:
+                                        decoded = decode_seatsio_response(response.body)
+                                        if decoded:
+                                            parsed = json.loads(decoded)
+                                            seat_list = parsed if isinstance(parsed, list) else []
+                                            for item in seat_list:
+                                                if not isinstance(item, dict):
+                                                    continue
+                                                item_label = item.get('objectLabelOrUuid', '')
+                                                if item_label == ga_uuid or item_label == ga_label:
+                                                    quantity = item.get('quantity')
+                                                    if quantity is not None:
+                                                        total_quantity = (total_quantity or 0) + int(quantity)
+                                                    logger.info("using_ga_quantity_from_api",
+                                                              ga_label=ga_label,
+                                                              quantity=quantity,
+                                                              capacity=matching_ga_area.get('capacity'))
+                                                    break
+                                    except Exception as e:
+                                        logger.debug("failed_to_extract_ga_quantity", error=str(e))
+
+                    # Fall back to summed chart capacity if no quantity available from API
+                    if total_quantity is None:
+                        total_quantity = sum(ga.get('capacity') or 0 for ga in matching_ga_areas)
+
+                    current_stock = total_quantity
+                    is_sold_out = all_sold_out
+                    logger.info("ga_category_stock_resolved",
+                               category=category_label,
+                               sub_areas=len(matching_ga_areas),
+                               current_stock=current_stock,
+                               is_sold_out=is_sold_out)
                 else:
                     # Regular seat category - count available seats with this category
                     # Stock will be calculated after seats are built
