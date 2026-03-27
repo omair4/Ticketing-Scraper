@@ -615,6 +615,7 @@ class SeatsIOScraper(BaseScraper):
         object_categories = {}
         category_by_key = {}
         excluded_objects = set()  # Objects not for sale
+        not_for_sale_area_places = {}  # GA areas with partial not-for-sale counts
 
         if rendering_info:
             object_categories = rendering_info.get('objectCategories', {})
@@ -628,6 +629,17 @@ class SeatsIOScraper(BaseScraper):
                     excluded_objs = config.get('objects', [])
                     if isinstance(excluded_objs, list):
                         excluded_objects.update(excluded_objs)
+
+            # Extract areaPlaces — GA areas with partial not-for-sale counts
+            not_for_sale_area_places = {}
+            for event_id, config in for_sale_configs.items():
+                if isinstance(config, dict) and not config.get('forSale', True):
+                    area_places = config.get('areaPlaces', {})
+                    if isinstance(area_places, dict):
+                        not_for_sale_area_places.update(area_places)
+
+            if not_for_sale_area_places:
+                logger.info("not_for_sale_area_places", areas=not_for_sale_area_places)
 
             if excluded_objects:
                 logger.info("excluded_not_for_sale_objects", count=len(excluded_objects),
@@ -786,8 +798,13 @@ class SeatsIOScraper(BaseScraper):
                             matching_ga_areas.append(ga)
 
                 if matching_ga_areas:
-                    # GA category - sum available quantity across all matching sub-areas
-                    total_quantity = None  # None means fall back to summed capacity
+                    # GA category - calculate available stock
+                    # Formula: available = for_sale_capacity - booked
+                    #   for_sale_capacity = chart_capacity - areaPlaces (not-for-sale)
+                    #   booked = quantity from object-statuses (booked count)
+                    total_capacity = sum(ga.get('capacity') or 0 for ga in matching_ga_areas)
+                    total_booked = 0
+                    booked_from_api = False
                     all_sold_out = True
 
                     for matching_ga_area in matching_ga_areas:
@@ -798,7 +815,7 @@ class SeatsIOScraper(BaseScraper):
                         if ga_status_str not in ('booked', 'sold', 'taken'):
                             all_sold_out = False
 
-                        # Extract quantity from object-statuses for this sub-area
+                        # Extract booked quantity from object-statuses for this sub-area
                         if responses:
                             for response in responses:
                                 if 'object-statuses' in response.url and response.body:
@@ -814,24 +831,40 @@ class SeatsIOScraper(BaseScraper):
                                                 if item_label == ga_uuid or item_label == ga_label:
                                                     quantity = item.get('quantity')
                                                     if quantity is not None:
-                                                        total_quantity = (total_quantity or 0) + int(quantity)
-                                                    logger.info("using_ga_quantity_from_api",
+                                                        total_booked += int(quantity)
+                                                        booked_from_api = True
+                                                    logger.info("ga_booked_from_api",
                                                               ga_label=ga_label,
-                                                              quantity=quantity,
+                                                              booked=quantity,
                                                               capacity=matching_ga_area.get('capacity'))
                                                     break
                                     except Exception as e:
                                         logger.debug("failed_to_extract_ga_quantity", error=str(e))
 
-                    # Fall back to summed chart capacity if no quantity available from API
-                    if total_quantity is None:
-                        total_quantity = sum(ga.get('capacity') or 0 for ga in matching_ga_areas)
+                    # Calculate for-sale capacity by subtracting not-for-sale places
+                    not_for_sale_total = 0
+                    if not_for_sale_area_places:
+                        not_for_sale_total = sum(
+                            not_for_sale_area_places.get(ga.get('label', ''), 0)
+                            for ga in matching_ga_areas
+                        )
 
-                    current_stock = total_quantity
-                    is_sold_out = all_sold_out
+                    for_sale_capacity = max(0, total_capacity - not_for_sale_total)
+
+                    if booked_from_api:
+                        current_stock = max(0, for_sale_capacity - total_booked)
+                    else:
+                        # No API data — use for_sale_capacity as best estimate
+                        current_stock = for_sale_capacity
+
+                    is_sold_out = all_sold_out if current_stock > 0 else True
                     logger.info("ga_category_stock_resolved",
                                category=category_label,
                                sub_areas=len(matching_ga_areas),
+                               total_capacity=total_capacity,
+                               not_for_sale=not_for_sale_total,
+                               for_sale_capacity=for_sale_capacity,
+                               booked=total_booked if booked_from_api else 'N/A',
                                current_stock=current_stock,
                                is_sold_out=is_sold_out)
                 else:
@@ -1105,12 +1138,9 @@ class SeatsIOScraper(BaseScraper):
                         logger.debug("partial_category_map_match", mapped_label=mapped_label, pricing_key=pk)
                         return pv.get('price', Decimal('0')), pv.get('label')
 
-        # Fallback: first price
-        if pricing:
-            first = next(iter(pricing.values()))
-            logger.debug("using_fallback_price", category_key=category_key, category_label=category_label)
-            return first.get('price', Decimal('0')), first.get('label')
-
+        # No match found — return 0 so category is filtered out
+        # (Previously fell back to first price, causing unpriced categories to appear with wrong price)
+        logger.debug("no_price_match_found", category_key=category_key, category_label=category_label)
         return Decimal('0'), None
 
     def _recalculate_ticket_category_stock(self, seats: List[Seat], ticket_categories: List[TicketCategory]):
