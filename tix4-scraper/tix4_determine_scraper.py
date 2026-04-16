@@ -64,6 +64,12 @@ def classify(soup: BeautifulSoup) -> str:
     if has_svg:
         return "js_only_seatmap"
 
+    # Buy page rendered (has external_event_id hidden input) but carries no
+    # inventory elements. Sold-out / add-on only / temporarily unavailable.
+    # Return a sentinel instead of hard-failing.
+    if soup.select_one('input[name="external_event_id"]') is not None:
+        return "no_inventory"
+
     raise UnknownScenarioError(
         "No classifier rule matched. "
         f"has_svg={has_svg}, "

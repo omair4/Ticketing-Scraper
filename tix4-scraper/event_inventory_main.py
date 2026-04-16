@@ -89,6 +89,10 @@ def lambda_handler(event, context):
     # -------------------------------------------------------------------
     # Dispatch to scraper module
     # -------------------------------------------------------------------
+    if scraper_type == "no_inventory":
+        print(f"[inventory] SKIP no_inventory show: eventId={scraper_event['eventId']}")
+        return {"rows": 0, "scraper_type": "no_inventory", "eventId": scraper_event["eventId"]}
+
     scraper_mod = _SCRAPERS.get(scraper_type)
     if scraper_mod is None:
         raise ValueError(f"Unknown scraper_type: {scraper_type!r}")

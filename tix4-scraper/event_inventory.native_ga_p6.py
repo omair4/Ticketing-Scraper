@@ -76,10 +76,15 @@ def scrape(event: dict, proxy: Optional[str] = None) -> tuple[pd.DataFrame, dict
     for i, tc in enumerate(containers):
         plid = price_level_ids[i] if i < len(price_level_ids) else str(i)
 
-        # Category label — clean whitespace and trailing +/- from qty buttons
-        sect_el = tc.select_one(".seat-section")
-        raw_cat = re.sub(r"\s+", " ", sect_el.get_text(strip=True)) if sect_el else ""
+        # Category label — use the <h3> inside .seat-section; ignore trailing
+        # "Only N tickets available!" / qty button text that also lives in the div.
+        sect_el = tc.select_one(".seat-section h3") or tc.select_one(".seat-section")
+        raw_cat = re.sub(r"\s+", " ", sect_el.get_text(" ", strip=True)) if sect_el else ""
         category = re.sub(r"[\s\-\+]+$", "", raw_cat).strip() or f"category_{i}"
+
+        # Extract remaining count from "Only N tickets available!" if present
+        remaining_m = re.search(r"Only\s+(\d+)\s+tickets?\s+available", tc.get_text(" ", strip=True), re.I)
+        qty_remaining = int(remaining_m.group(1)) if remaining_m else None
 
         # All-in price from .platinum-price
         plat = tc.select_one(".platinum-price")

@@ -185,6 +185,9 @@ local_creds.py
 # Playwright MCP
 .playwright-mcp/
 
+# tix4-scraper test outputs
+tix4-scraper/test_outputs/
+
 # Project output and generated docs
 docs/
 output/

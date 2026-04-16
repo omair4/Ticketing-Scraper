@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS event_discovery (
     category                 VARCHAR(100),
     starting_price_usd       DECIMAL(8,2),
     event_url                VARCHAR(500),
-    scraper_type             ENUM('native_seatmap','external_seatmap','native_ga','external_ga','native_ga_p6','js_only_seatmap'),
+    scraper_type             ENUM('native_seatmap','external_seatmap','native_ga','external_ga','native_ga_p6','js_only_seatmap','no_inventory'),
     external_api_provider_id VARCHAR(10)   DEFAULT '',
     is_active                TINYINT(1)    NOT NULL DEFAULT 1,
     created_at               DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,

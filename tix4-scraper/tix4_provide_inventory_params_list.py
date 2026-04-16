@@ -36,6 +36,7 @@ def lambda_handler(event, context):
                 WHERE es.event_datetime BETWEEN NOW() AND DATE_ADD(NOW(), INTERVAL %s DAY)
                   AND ed.is_active = 1
                   AND COALESCE(es.scraper_type, ed.scraper_type) IS NOT NULL
+                  AND COALESCE(es.scraper_type, ed.scraper_type) != 'no_inventory'
                 ORDER BY es.event_datetime
             """, (days_ahead,))
             rows = cur.fetchall()
