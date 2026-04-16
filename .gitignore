@@ -182,6 +182,9 @@ cython_debug/
 links.txt
 local_creds.py
 
+# Playwright MCP
+.playwright-mcp/
+
 # Project output and generated docs
 docs/
 output/
