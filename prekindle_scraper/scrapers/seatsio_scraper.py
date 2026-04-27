@@ -408,15 +408,8 @@ class SeatsIOScraper(BaseScraper):
                         if not isinstance(ga, dict):
                             continue
                         label = ga.get('label', '')
-                        # Use rendering-info to distinguish tables/couches from real GA areas
-                        # Tables/couches map to category 2 (or other non-GA categories), GA areas map to category 1
-                        is_table = False
-                        if label in object_categories:
-                            cat_key = object_categories[label]
-                            # Check if this is a table/couch category vs GA category (category 1)
-                            # Tables and couches are typically not category 1 (GA)
-                            if 'table' in label.lower() or 'couch' in label.lower() or (isinstance(cat_key, int) and cat_key != 1):
-                                is_table = True
+                        # Use label to distinguish tables/couches from real GA areas
+                        is_table = 'table' in label.lower() or 'couch' in label.lower()
                         
                         area_data = {
                             'label': label,
@@ -500,14 +493,8 @@ class SeatsIOScraper(BaseScraper):
                     if not isinstance(ga, dict):
                         continue
                     label = ga.get('label', '')
-                    # Use rendering-info to distinguish tables/couches from real GA areas
-                    is_table = False
-                    if label in object_categories:
-                        cat_key = object_categories[label]
-                        # Check if this is a table/couch category vs GA category (category 1)
-                        # Tables and couches are typically not category 1 (GA)
-                        if 'table' in label.lower() or 'couch' in label.lower() or (isinstance(cat_key, int) and cat_key != 1):
-                            is_table = True
+                    # Use label to distinguish tables/couches from real GA areas
+                    is_table = 'table' in label.lower() or 'couch' in label.lower()
                     
                     area_data = {
                         'label': label,
