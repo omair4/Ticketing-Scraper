@@ -1,0 +1,14 @@
+[project]
+name = "aaanortheast-scraper"
+version = "0.0.1"
+description = "POC: Cloudflare bypass bake-off for aaanortheast.memberdeals.com"
+requires-python = ">=3.11"
+dependencies = [
+    "curl-cffi",
+    "patchright",
+    "camoufox[geoip]",
+    "beautifulsoup4",
+]
+
+[tool.uv]
+package = false
