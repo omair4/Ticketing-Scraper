@@ -1,0 +1,21 @@
+"""Local credentials shim. Copy to `local_creds.py` and edit as needed.
+Imported into sys.modules as 'creds' by run_pipeline.py and test_local.py so
+Lambda-shape handlers find their `from creds import get_db_info, get_proxy_info`.
+"""
+
+
+def get_db_info():
+    """Return (host, user, password). Local mode skips DB writes when host is
+    falsy."""
+    return ("", "", "")
+
+
+def get_proxy_info():
+    """Return (host, port, user, password). Defaults match the Bright Data
+    creds used in the POC; override here for your own account."""
+    return (
+        "brd.superproxy.io",
+        "33335",
+        "brd-customer-hl_b335a920-zone-proxy_test_omair",
+        "6aeisn18mfjn",
+    )
