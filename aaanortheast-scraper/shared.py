@@ -277,33 +277,49 @@ def parse_showtimes(event_html: str) -> list[tuple[str, str, str]]:
     return ordered
 
 
-def extract_event_metadata(event_html: str) -> dict:
-    """Pulls event_name + venue fields from the SSR analytics blob and <title>."""
-    obj = _extract_analytics(event_html) or {}
-    page = obj.get("page") or {}
-    venue_name = page.get("venue_name") or ""
-    venue_city = page.get("venue_city") or ""
-    venue_state = page.get("venue_state") or ""
-    venue_zip = page.get("venue_zip")
-    event_name = page.get("event_name") or ""
+def extract_event_metadata(html: str) -> dict:
+    """Pulls event_name + venue fields from the SSR analytics blob.
 
+    Works on both event-detail pages (`view_event`) and datetime pages
+    (`view_event_datetime`). Event-detail pages carry only venue_state +
+    venue_zip in `analytics.product`; datetime pages additionally have a
+    DOM-rendered venue name in `<span class="venue">...</span>`.
+    """
+    obj = _extract_analytics(html) or {}
+    product = obj.get("product") or {}
+    page = obj.get("page") or {}
+
+    event_name = product.get("name") or page.get("event_name") or ""
     if not event_name:
-        m = re.search(r"<title>([^<]+)</title>", event_html)
+        m = re.search(r"<title>([^<]+)</title>", html)
         if m:
             t = m.group(1).strip()
-            # Listing titles look like: "Tickets - The Lion King - Broadway - "
             t = re.sub(r"^Tickets\s*-\s*", "", t)
             t = re.sub(r"\s*-\s*$", "", t)
             event_name = t
 
-    venue_full = ", ".join(p for p in (venue_name, venue_city, venue_state) if p)
-    if venue_zip:
+    venue_state = product.get("venue_state") or ""
+    venue_zip = product.get("venue_zip")
+
+    # Datetime pages render the venue name in DOM. Try grabbing it.
+    venue_name = ""
+    venue_city = ""
+    m_v = re.search(r'<span class="venue">([^<]+)</span>', html)
+    if m_v:
+        venue_name = m_v.group(1).strip()
+    m_c = re.search(r'<span class="city">([^<]+)</span>', html)
+    if m_c:
+        venue_city = m_c.group(1).strip()
+
+    venue_parts = [p for p in (venue_name, venue_city, venue_state) if p]
+    venue_full = ", ".join(venue_parts)
+    if venue_zip and venue_full:
         venue_full = f"{venue_full} {venue_zip}".strip()
 
     return {
-        "event_name": event_name,
-        "venue_name": venue_full or venue_name,
-        "venue_city": venue_city,
+        "event_name":  event_name,
+        "venue_name":  venue_full,
+        "venue_city":  venue_city,
         "venue_state": venue_state,
     }
 
@@ -394,10 +410,15 @@ def parse_view_event_datetime_tickets(html: str) -> list[dict]:
         title_el = el.select_one(".se-listing-item-details-title")
         price_el = el.select_one(".se-listing-item-price")
         desc_el = el.select_one(".se-listing-item-details-description-box")
-        # Pull qty options from the <select> rather than concatenated text.
+        # Qty options are rendered as a custom select: each option is a
+        # `<li class="se-custom-option" data-value="N">`. (The hidden form
+        # control is an <input type="hidden">, not a native <select>.)
         qty_options: list[int] = []
-        for opt in el.select(".se-listing-item-section-qty option"):
-            v = (opt.get("value") or "").strip()
+        for opt in el.select(
+            ".se-listing-item-section-qty li.se-custom-option[data-value], "
+            ".se-listing-item-section-qty option"
+        ):
+            v = (opt.get("data-value") or opt.get("value") or "").strip()
             try:
                 n = int(v)
             except ValueError:
@@ -424,7 +445,7 @@ def parse_view_event_datetime_tickets(html: str) -> list[dict]:
 
 PER_PAGE_TIMEOUT_MS = 120_000
 SETTLE_TIMEOUT_MS = 15_000
-CHALLENGE_WAIT_MS = 60_000
+CHALLENGE_WAIT_MS = 120_000  # Some Bright Data IPs draw harder CF challenges; allow more time.
 
 
 def _probe_exit_ip(proxy: dict) -> str | None:

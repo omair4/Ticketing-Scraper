@@ -65,8 +65,11 @@ def lambda_handler(event, context):
         eid = str(ev.get("event_id", "")).lstrip("E")
         if not eid:
             continue
+        # scraper_type may be empty -- the event-detail page doesn't carry the
+        # data-tpl marker (only the datetime page does). event_inventory_main
+        # auto-detects from the response. We pass through whatever hint we have.
         scraper_type = ev.get("scraper_type", "")
-        if not scraper_type:
+        if not ev.get("showtimes"):
             continue
         for showtime in ev.get("showtimes", []):
             d = showtime.get("date", "")

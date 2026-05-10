@@ -109,25 +109,16 @@ def cmd_schedule(event_id: str) -> dict:
 
 
 def cmd_inventory(event_id: str, date: str, time_: str, qty: int = DEFAULT_QTY) -> dict:
-    """Stage 6 only -- one showtime."""
-    # We need the scraper_type. Try cache first; fall back to determine.
+    """Stage 6 only -- one showtime. Auto-detects scraper_type from response."""
+    # Try to get event_name / venue_name from the cached event HTML (cheap).
     sched = event_schedule_handler({"event_id": event_id, "use_cache": True}, None)
-    scraper_type = sched.get("scraper_type")
-    if not scraper_type:
-        det = determine_handler({"event_id": event_id}, None)
-        scraper_type = det.get("scraper_type")
-        sched = det
-    if not scraper_type:
-        print(f"  Cannot determine scraper_type for E{event_id}. Aborting.")
-        return {}
-
     job = {
         "eventId":        event_id,
-        "event_name":     sched.get("event_name", ""),
-        "venue_name":     sched.get("venue_name", ""),
+        "event_name":     sched.get("event_name", "") if sched else "",
+        "venue_name":     sched.get("venue_name", "") if sched else "",
         "event_datetime": f"{date} {time_}",
         "ticket_url":     DATETIME_URL_FMT.format(id=event_id, date=date, time=time_, qty=qty),
-        "scraper_type":   scraper_type,
+        "scraper_type":   "",  # auto-detected by event_inventory_main from response
         "qty":            qty,
         "time_frame":     0,
         "run_id":         time.strftime("%Y%m%d_%H%M%S"),
@@ -135,7 +126,10 @@ def cmd_inventory(event_id: str, date: str, time_: str, qty: int = DEFAULT_QTY) 
     print(f"=== Stage 6: inventory for E{event_id} {date} {time_} qty={qty} ===")
     print(f"  ticket_url: {job['ticket_url']}")
     out = event_inventory_handler(job, None)
+    print(f"  scraper_type: {out.get('scraper_type')}")
     print(f"  rows={out.get('rows')}    total_stock={out.get('total_stock')}")
+    if out.get("error"):
+        print(f"  error: {out['error']}")
     print(f"  csv:  {out.get('csv_path')}")
     print(f"  log:  {out.get('log_path')}")
     return out
@@ -145,10 +139,13 @@ def cmd_full(event_id: str, qty: int = DEFAULT_QTY) -> dict:
     """Stages 2 -> 5 -> 6 for one event (all its showtimes)."""
     print(f"=== Full pipeline for E{event_id} qty={qty} ===\n")
     det = determine_handler({"event_id": event_id}, None)
-    if det.get("blocked") or not det.get("scraper_type"):
-        print(f"  determine_scraper failed: {det}")
+    if det.get("blocked"):
+        print(f"  determine_scraper blocked: {det.get('block_reason')}")
         return {}
-    print(f"  scraper_type:  {det['scraper_type']}")
+    if not det.get("showtimes"):
+        print(f"  determine_scraper found no showtimes: {det}")
+        return {}
+    print(f"  scraper_type:  {det.get('scraper_type') or '(auto-detect at fetch)'}")
     print(f"  event_name:    {det['event_name']}")
     print(f"  venue_name:    {det['venue_name']}")
     print(f"  showtimes:     {len(det['showtimes'])}")

@@ -1,33 +1,29 @@
-"""Tier-level inventory scraper for the `ebg_v2/view_event_datetime` template
-(e.g. Harry Potter and the Cursed Child, where price tiers cover groups of
-seats rather than individual seats).
+"""Tier-level inventory parser for the `ebg_v2/view_event_datetime` template
+(e.g. Harry Potter and the Cursed Child).
+
+Module contract (called by event_inventory_main.py):
+  parse(html: str, event: dict) -> (pd.DataFrame, dict)
 
 Emits ONE DataFrame row per available tier, with `total_stock` carrying the
-maximum buyable quantity exposed by the page (the highest <option value=N>
-in the qty <select>).
-
-Module contract:
-  scrape(event: dict, proxy: str | None = None) -> (pd.DataFrame, dict)
+maximum buyable quantity (the highest <option value=N> in the qty <select>).
 """
 from __future__ import annotations
 
 import pandas as pd
 
-import shared
 from shared import (
-    get_or_create_session,
+    extract_event_metadata,
     parse_view_event_datetime_tickets,
 )
 
 
-def _build_rows(event: dict, tiers: list[dict]) -> list[dict]:
+def _build_rows(event: dict, tiers: list[dict], venue_name: str) -> list[dict]:
     eid = event["eventId"]
     dt = event.get("event_datetime", "")
     rows: list[dict] = []
     for tier in tiers:
         qty_options = tier.get("qty_options") or []
         if not qty_options:
-            # Sold out / no available qty -> skip.
             continue
         max_qty = max(qty_options)
         price = tier.get("price")
@@ -36,7 +32,7 @@ def _build_rows(event: dict, tiers: list[dict]) -> list[dict]:
         rows.append({
             "eventId":           eid,
             "event_name":        event.get("event_name", ""),
-            "venue_name":        event.get("venue_name", ""),
+            "venue_name":        venue_name or event.get("venue_name", ""),
             "event_datetime":    dt,
             "objectLabelOrUuid": f"GA-{tier_name}-{eid}-{dt}".strip("-"),
             "section_name":      tier_name,
@@ -54,42 +50,22 @@ def _build_rows(event: dict, tiers: list[dict]) -> list[dict]:
     return rows
 
 
-async def _scrape_async(event: dict) -> tuple[pd.DataFrame, dict]:
-    logs = {
-        "eventId":         event["eventId"],
-        "event_name":      event.get("event_name", ""),
-        "venue_name":      event.get("venue_name", ""),
-        "event_datetime":  event.get("event_datetime", ""),
-        "ticket_url":      event.get("ticket_url", ""),
-        "scraper_type":    event.get("scraper_type", "view_event_datetime"),
-        "qty":             int(event.get("qty", 6)),
-        "time_frame":      int(event.get("time_frame", 0)),
-        "statuscode":      None,
-        "total_stock":     0,
-        "stock_by_section": {},
-        "error_message":   None,
-    }
-
-    session = await get_or_create_session()
-    result = await session.fetch(event["ticket_url"])
-
-    logs["statuscode"] = result.status
-    if result.blocked:
-        logs["error_message"] = f"blocked: {result.block_reason}"
-        return pd.DataFrame(), logs
-
-    tiers = parse_view_event_datetime_tickets(result.html)
-    rows = _build_rows(event, tiers)
+def parse(html: str, event: dict) -> tuple[pd.DataFrame, dict]:
+    """Returns (df, partial_logs). Caller fills statuscode + error_message."""
+    metadata = extract_event_metadata(html)
+    tiers = parse_view_event_datetime_tickets(html)
+    rows = _build_rows(event, tiers, venue_name=metadata.get("venue_name", ""))
     df = pd.DataFrame(rows)
 
-    if not df.empty:
-        logs["total_stock"] = int(df["total_stock"].sum())
-        logs["stock_by_section"] = {
-            r["section_name"]: r["total_stock"] for r in rows
-        }
-    return df, logs
-
-
-def scrape(event: dict, proxy: str | None = None) -> tuple[pd.DataFrame, dict]:
-    _ = proxy  # Honored implicitly via shared.playwright_proxy().
-    return shared.run_async(_scrape_async(event))
+    total_stock = int(df["total_stock"].sum()) if not df.empty else 0
+    logs_partial = {
+        "scraper_type": "view_event_datetime",
+        "venue_name":   metadata.get("venue_name", ""),
+        "total_stock":  total_stock,
+        "stock_by_section": (
+            {r["section_name"]: r["total_stock"] for r in rows}
+            if rows else {}
+        ),
+        "tiers_found": len(tiers),
+    }
+    return df, logs_partial
