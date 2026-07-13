@@ -105,22 +105,23 @@ class SeatsIOScraper(BaseScraper):
                             # Build seat for this missing table/couch
                             category_label = None
                             category_key = None
-                            
+
                             # Get category from rendering-info
                             if table_label in object_categories_lookup:
                                 cat_key = object_categories_lookup[table_label]
                                 if cat_key in category_by_key_lookup:
                                     category_label = category_by_key_lookup[cat_key].get('label')
                                     category_key = str(cat_key)
-                            
+
                             # Get price for this category
                             price, level_label = self._get_price_for_category(
                                 category_key, chart_data.get('category_map', {}), pricing, category_label
                             )
-                            
+
                             # Default to available if not in object-statuses (may be not yet on sale)
+                            display_label = table_area.get('displayLabel') or table_label
                             seats.append(Seat(
-                                section=table_label,
+                                section=display_label,
                                 row='GA',
                                 seat='GA',
                                 price=price,
@@ -408,28 +409,22 @@ class SeatsIOScraper(BaseScraper):
                         if not isinstance(ga, dict):
                             continue
                         label = ga.get('label', '')
-                        # Use rendering-info to distinguish tables/couches from real GA areas
-                        # Tables/couches map to category 2 (or other non-GA categories), GA areas map to category 1
-                        is_table = False
-                        if label in object_categories:
-                            cat_key = object_categories[label]
-                            # Check if this is a table/couch category vs GA category (category 1)
-                            # Tables and couches are typically not category 1 (GA)
-                            if 'table' in label.lower() or 'couch' in label.lower() or (isinstance(cat_key, int) and cat_key != 1):
-                                is_table = True
+                        # Use label to distinguish tables/couches from real GA areas
+                        is_table = 'table' in label.lower() or 'couch' in label.lower()
                         
                         area_data = {
                             'label': label,
+                            'displayLabel': ga.get('displayLabel', ''),
                             'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
                             'uuid': ga.get('uuid', ''),
                             'capacity': ga.get('capacity'),
                         }
-                        
+
                         if is_table:
                             table_areas.append(area_data)
                         else:
                             ga_areas.append(area_data)
-                
+
                 logger.info("extracted_multi_floor_chart_data",
                            categories=len(category_map),
                            seats=len(chart_seats),
@@ -500,22 +495,17 @@ class SeatsIOScraper(BaseScraper):
                     if not isinstance(ga, dict):
                         continue
                     label = ga.get('label', '')
-                    # Use rendering-info to distinguish tables/couches from real GA areas
-                    is_table = False
-                    if label in object_categories:
-                        cat_key = object_categories[label]
-                        # Check if this is a table/couch category vs GA category (category 1)
-                        # Tables and couches are typically not category 1 (GA)
-                        if 'table' in label.lower() or 'couch' in label.lower() or (isinstance(cat_key, int) and cat_key != 1):
-                            is_table = True
+                    # Use label to distinguish tables/couches from real GA areas
+                    is_table = 'table' in label.lower() or 'couch' in label.lower()
                     
                     area_data = {
                         'label': label,
+                        'displayLabel': ga.get('displayLabel', ''),
                         'categoryKey': str(ga.get('categoryKey')) if ga.get('categoryKey') is not None else None,
                         'uuid': ga.get('uuid', ''),
                         'capacity': ga.get('capacity'),
                     }
-                    
+
                     if is_table:
                         table_areas.append(area_data)
                     else:
@@ -875,12 +865,21 @@ class SeatsIOScraper(BaseScraper):
 
                 # Skip categories with zero price (likely section/area names, not price categories)
                 if price == 0:
-                    logger.debug("skipping_zero_price_category_from_rendering_info", 
+                    logger.debug("skipping_zero_price_category_from_rendering_info",
                                category_label=category_label, category_key=category_key)
                     continue
-                
+
+                # Prefer chart displayLabel (what the customer sees) when all matching GA
+                # areas agree on it. Falls back to rendering-info category label.
+                effective_category_name = category_label
+                if matching_ga_areas:
+                    display_labels = {ga.get('displayLabel', '') for ga in matching_ga_areas}
+                    display_labels.discard('')
+                    if len(display_labels) == 1:
+                        effective_category_name = next(iter(display_labels))
+
                 ticket_categories.append(TicketCategory(
-                    category_name=category_label,
+                    category_name=effective_category_name,
                     category_id=str(category_key),
                     price=price,
                     current_stock=current_stock,
